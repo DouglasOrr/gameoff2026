@@ -33,5 +33,5 @@ renderer.renderer.setAnimationLoop((now: number) => {
     physics.step(state, controls, FIXED_DT);
     acc -= FIXED_DT;
   }
-  renderer.render(state);
+  renderer.render(state, dt);
 });

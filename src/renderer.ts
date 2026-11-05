@@ -19,9 +19,16 @@ export const S = {
     far: 700,
   },
   camera: {
-    distance: bounceTop * 1.4, // behind the rider, along its facing direction
+    fov: 60,
+    distance: bounceTop * 1.4, // initial distance, before the autorange settles
     height: bounceTop * 0.7, // fixed camera height, so bounces don't shake the horizon
     lookY: bounceTop * 0.32,
+    minDistance: bounceTop * 0.9, // closest the autorange pulls in
+    maxDistance: bounceTop * 4, // farthest it pulls back (the autorange limit)
+    peakWindow: 1, // seconds of height history the autorange frames
+    fitPadding: 0.9, // fraction of the vertical half-FOV the framing may use
+    zoomOutTime: 0.1, // seconds to pull back, as the rider climbs
+    zoomInTime: 1, // seconds to ease back in, once it drops
   },
   shadow: {
     radiusNear: 2.5,
@@ -33,10 +40,26 @@ export const S = {
     farOpacity: 0.25,
     contactColor: new THREE.Color(0x0d9488),
   },
+  rider: {
+    size: 4, // edge length of the rider box
+  },
 };
 
 function css(hex: number): string {
   return `#${hex.toString(16).padStart(6, "0")}`;
+}
+
+// Distance behind the look point at which a point at world height `y` sits on
+// the edge of the camera's vertical field of view. The camera looks from
+// (distance, cameraHeight) towards (0, lookY); the angle to the point gives a
+// quadratic in `distance`, and we want its larger root - the distance at or
+// beyond which the point is framed.
+function fitDistance(y: number, tanHalfFov: number): number {
+  const dy = S.camera.lookY - y;
+  const c = (y - S.camera.height) * (S.camera.lookY - S.camera.height);
+  const disc = dy * dy - 4 * tanHalfFov * tanHalfFov * c;
+  if (disc <= 0) return 0;
+  return (Math.abs(dy) + Math.sqrt(disc)) / (2 * tanHalfFov);
 }
 
 function makeGridTexture(maxAniso: number): THREE.CanvasTexture {
@@ -78,12 +101,19 @@ export class Renderer {
   private readonly mid = new THREE.Vector3();
   private readonly forward = new THREE.Vector3();
   private readonly foot = new THREE.Vector3();
+  private readonly fitTan: number; // tan of the padded vertical half-FOV
+  private readonly peaks: { t: number; top: number }[] = [];
+  private distance = S.camera.distance;
+  private clock = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
+    this.camera = new THREE.PerspectiveCamera(S.camera.fov, 1, 0.1, 1200);
     this.camera.position.set(0, S.camera.height, S.camera.distance);
     this.camera.lookAt(0, S.camera.lookY, 0);
+    this.fitTan = Math.tan(
+      THREE.MathUtils.degToRad(S.camera.fov / 2) * S.camera.fitPadding,
+    );
 
     this.scene.background = new THREE.Color(S.background);
     this.scene.fog = new THREE.Fog(S.background, S.fog.near, S.fog.far);
@@ -104,7 +134,7 @@ export class Renderer {
     this.scene.add(ground);
 
     this.rider = new THREE.Mesh(
-      new THREE.BoxGeometry(4, 4, 4),
+      new THREE.BoxGeometry(S.rider.size, S.rider.size, S.rider.size),
       new THREE.MeshStandardMaterial({ color: 0x4f9cf9, roughness: 0.4 }),
     );
     this.stick = new THREE.Mesh(
@@ -140,7 +170,7 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
-  render(st: physics.State): void {
+  render(st: physics.State, dt: number): void {
     const { position, orientation, strain } = st.pogo;
     this.rider.position.set(position.x, position.y, position.z);
     this.rider.quaternion.set(
@@ -169,10 +199,32 @@ export class Renderer {
     this.forward.y = 0;
     if (this.forward.lengthSq() > 1e-6) this.forward.normalize();
     else this.forward.set(0, 0, 1);
+
+    // Autorange: frame the highest the rider has been in the last second, so
+    // successive bounces settle instead of pumping the camera as the rider
+    // falls. Pull back quickly, ease back in slowly, and clamp to the limit.
+    // The camera height stays fixed, so this never pitches the horizon.
+    const riderTop = position.y + S.rider.size / 2;
+    this.clock += dt;
+    this.peaks.push({ t: this.clock, top: riderTop });
+    while (this.peaks[0].t < this.clock - S.camera.peakWindow)
+      this.peaks.shift();
+    let peak = -Infinity;
+    for (const p of this.peaks) if (p.top > peak) peak = p.top;
+
+    const target = THREE.MathUtils.clamp(
+      fitDistance(peak, this.fitTan),
+      S.camera.minDistance,
+      S.camera.maxDistance,
+    );
+    const tau =
+      target > this.distance ? S.camera.zoomOutTime : S.camera.zoomInTime;
+    this.distance += (target - this.distance) * (1 - Math.exp(-dt / tau));
+
     this.camera.position.set(
-      position.x - this.forward.x * S.camera.distance,
+      position.x - this.forward.x * this.distance,
       S.camera.height,
-      position.z - this.forward.z * S.camera.distance,
+      position.z - this.forward.z * this.distance,
     );
     this.camera.lookAt(position.x, S.camera.lookY, position.z);
 
