@@ -77,6 +77,7 @@ export class Renderer {
   private readonly shadowMat: THREE.MeshBasicMaterial;
   private readonly mid = new THREE.Vector3();
   private readonly forward = new THREE.Vector3();
+  private readonly foot = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -157,6 +158,10 @@ export class Renderer {
       .applyQuaternion(this.stick.quaternion)
       .add(this.rider.position);
     this.stick.position.copy(this.mid);
+    this.foot
+      .set(0, -length, 0)
+      .applyQuaternion(this.stick.quaternion)
+      .add(this.rider.position);
 
     // Chase camera: behind the rider's heading, at a fixed height. Only the
     // horizontal part of the facing direction matters (pitch/roll ignored).
@@ -178,7 +183,7 @@ export class Renderer {
       0,
       1,
     );
-    this.shadow.position.set(position.x, physics.S.groundY + 0.05, position.z);
+    this.shadow.position.set(this.foot.x, physics.S.groundY + 0.05, this.foot.z);
     this.shadow.scale.setScalar(
       THREE.MathUtils.lerp(sh.radiusNear, sh.radiusFar, t),
     );

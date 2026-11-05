@@ -13,6 +13,7 @@ renderer.resize();
 canvas.addEventListener("click", () => canvas.requestPointerLock());
 
 const keys = { w: false, a: false, s: false, d: false };
+let mega = false; // shift: mega-bounce
 let mouseDx = 0;
 
 canvas.addEventListener("mousemove", (e) => {
@@ -35,6 +36,10 @@ function mapKey(e: KeyboardEvent): keyof typeof keys | null {
 }
 
 window.addEventListener("keydown", (e) => {
+  if (e.key === "Shift") {
+    mega = true;
+    return;
+  }
   const k = mapKey(e);
   if (k) {
     keys[k] = true;
@@ -42,6 +47,10 @@ window.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("keyup", (e) => {
+  if (e.key === "Shift") {
+    mega = false;
+    return;
+  }
   const k = mapKey(e);
   if (k) {
     keys[k] = false;
@@ -50,6 +59,7 @@ window.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", () => {
   keys.w = keys.a = keys.s = keys.d = false;
+  mega = false;
 });
 
 const LEAN_RATE = 1.5; // rad/s from WASD
@@ -72,9 +82,10 @@ renderer.renderer.setAnimationLoop((now: number) => {
   acc += dt;
 
   const input: physics.Inputs = {
-    yaw: dt > 0 ? (mouseDx * MOUSE_SENS) / dt : 0,
+    yaw: dt > 0 ? -(mouseDx * MOUSE_SENS) / dt : 0,
     pitch: ((keys.w ? 1 : 0) - (keys.s ? 1 : 0)) * LEAN_RATE,
-    roll: ((keys.a ? 1 : 0) - (keys.d ? 1 : 0)) * LEAN_RATE,
+    roll: ((keys.d ? 1 : 0) - (keys.a ? 1 : 0)) * LEAN_RATE,
+    mega,
   };
   mouseDx = 0;
 

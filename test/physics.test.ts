@@ -3,7 +3,7 @@ import * as physics from "../src/physics";
 import * as math from "../src/math";
 
 const DT = 1 / 240;
-const NO_INPUT: physics.Inputs = { yaw: 0, pitch: 0, roll: 0 };
+const NO_INPUT: physics.Inputs = { yaw: 0, pitch: 0, roll: 0, mega: false };
 
 describe("physics bounce", () => {
   it("spawns above the ground with a vertical stick, at rest", () => {
@@ -43,20 +43,38 @@ describe("physics bounce", () => {
 
     expect(touched).toBe(true);
     expect(maxStrain).toBeGreaterThan(0);
-    expect(maxStrain).toBeLessThanOrEqual(physics.S.maxStrain);
+    expect(maxStrain).toBeLessThanOrEqual(
+      physics.S.maxStrainRatio * physics.S.stickLength,
+    );
     // No tunnelling through the ground.
     expect(minY).toBeGreaterThan(physics.S.groundY);
-    // Energy is preserved, so it climbs back to (almost) the drop height.
-    expect(maxAfterBounce).toBeGreaterThan(startY - 0.2);
+    // The active spring balances drag, so it settles near the drop height.
+    expect(maxAfterBounce).toBeGreaterThan(startY - 2);
   });
 
-  it("plants the foot on the floor, not below it", () => {
+  it("keeps the foot on the ground while in contact", () => {
     const s = physics.spawn();
-    for (let i = 0; i < 300 && s.pogo.anchor === null; i++) {
+    let found = false;
+    for (let i = 0; i < 300 && !found; i++) {
       physics.step(s, NO_INPUT, DT);
+      if (s.pogo.strain > 0) {
+        found = true;
+        const axis = math.rotate(s.pogo.orientation, { x: 0, y: -1, z: 0 });
+        const length = physics.S.stickLength - s.pogo.strain;
+        expect(s.pogo.position.y + length * axis.y).toBeCloseTo(
+          physics.S.groundY,
+          6,
+        );
+      }
     }
-    expect(s.pogo.anchor).not.toBe(null);
-    expect(s.pogo.anchor!.y).toBe(physics.S.groundY);
+    expect(found).toBe(true);
+  });
+
+  it("converts a lean into horizontal speed", () => {
+    const s = physics.spawn();
+    s.pogo.orientation = math.rotationAboutX(0.4);
+    for (let i = 0; i < 480; i++) physics.step(s, NO_INPUT, DT);
+    expect(Math.hypot(s.pogo.velocity.x, s.pogo.velocity.z)).toBeGreaterThan(1);
   });
 
   it("resets the pogo when it falls through the ground", () => {
@@ -71,12 +89,11 @@ describe("physics bounce", () => {
     });
     expect(s.pogo.velocity).toEqual({ x: 0, y: 0, z: 0 });
     expect(s.pogo.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
-    expect(s.pogo.anchor).toBe(null);
   });
 
   it("keeps the stick orientation a unit quaternion", () => {
     const s = physics.spawn();
-    const input: physics.Inputs = { yaw: 1.3, pitch: 0.7, roll: -0.9 };
+    const input: physics.Inputs = { yaw: 1.3, pitch: 0.7, roll: -0.9, mega: false };
     for (let i = 0; i < 200; i++) {
       physics.step(s, input, DT);
       const q = s.pogo.orientation;
@@ -86,10 +103,23 @@ describe("physics bounce", () => {
 
   it("rotates the orientation from input", () => {
     const s = physics.spawn();
-    physics.step(s, { yaw: 0, pitch: 0, roll: 0 }, DT);
+    physics.step(s, { yaw: 0, pitch: 0, roll: 0, mega: false }, DT);
     expect(s.pogo.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
-    physics.step(s, { yaw: 1, pitch: 0, roll: 0 }, DT);
+    physics.step(s, { yaw: 1, pitch: 0, roll: 0, mega: false }, DT);
     expect(s.pogo.orientation.y).toBeGreaterThan(0);
+  });
+
+  it("mega-bounce adds height", () => {
+    const maxHeight = (mega: boolean) => {
+      const s = physics.spawn();
+      let top = 0;
+      for (let i = 0; i < 480; i++) {
+        physics.step(s, { ...NO_INPUT, mega }, DT);
+        top = Math.max(top, s.pogo.position.y);
+      }
+      return top;
+    };
+    expect(maxHeight(true)).toBeGreaterThan(maxHeight(false) + 5);
   });
 
   it("is deterministic for identical step sequences", () => {
