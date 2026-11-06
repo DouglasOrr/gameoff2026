@@ -132,3 +132,57 @@ describe("physics bounce", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("tree scatter", () => {
+  it("puts cones on the ground, clear of the spawn", () => {
+    const s = physics.spawn();
+    const t = physics.S.trees;
+    expect(s.trees).toHaveLength(t.count);
+    for (const tree of s.trees) {
+      expect(tree.position.y).toBe(physics.S.groundY);
+      expect(Math.hypot(tree.position.x, tree.position.z)).toBeGreaterThanOrEqual(
+        t.clear,
+      );
+      expect(tree.radius).toBeGreaterThanOrEqual(t.minRadius);
+      expect(tree.radius).toBeLessThanOrEqual(t.maxRadius);
+      expect(tree.height).toBeGreaterThanOrEqual(t.minHeight);
+      expect(tree.height).toBeLessThanOrEqual(t.maxHeight);
+    }
+  });
+
+  it("is reproducible for a fixed seed", () => {
+    expect(physics.spawn().trees).toEqual(physics.spawn().trees);
+  });
+});
+
+describe("tree collision", () => {
+  const fly = (trees: physics.Tree[], y = 40) => {
+    const s = physics.spawn();
+    s.trees = trees;
+    s.pogo.position = { x: 0, y, z: -5 };
+    s.pogo.velocity = { x: 0, y: 0, z: -60 };
+    s.pogo.orientation = math.identityQuat();
+    for (let i = 0; i < 30; i++) physics.step(s, NO_INPUT, DT);
+    return s.pogo;
+  };
+  const tree: physics.Tree = {
+    position: { x: 0, y: 0, z: -20 },
+    radius: 10,
+    height: 100,
+  };
+
+  it("rebounds off a tree, up its slope", () => {
+    const hit = fly([tree]);
+    const miss = fly([]);
+    expect(hit.velocity.z).toBeGreaterThan(0); // bounced back
+    expect(hit.velocity.y).toBeGreaterThan(miss.velocity.y + 5); // and up the slope
+    expect(hit.position.z).toBeGreaterThan(-10 - physics.S.riderRadius);
+  });
+
+  it("passes over a tree it clears", () => {
+    const high = fly([{ ...tree, height: 30 }], 200);
+    const miss = fly([], 200);
+    expect(high.velocity.z).toBeLessThan(0); // carried on past
+    expect(high.velocity.z).toBeCloseTo(miss.velocity.z, 5);
+  });
+});

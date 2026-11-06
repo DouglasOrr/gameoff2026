@@ -51,6 +51,11 @@ export const S = {
   stick: {
     width: 1.6, // edge of the stick's square cross-section
   },
+  tree: {
+    color: 0x2f7d4e,
+    segments: 8, // cone is low-poly, to match the toon look
+    ghostOpacity: 0.25, // trees between the camera and the rider
+  },
 };
 
 // Every shadow layer draws only where the stencil is free, then marks those
@@ -428,13 +433,119 @@ class PogoView {
   }
 }
 
+// Static cones scattered across the ground. Trees that sit between the camera
+// and the rider fade out so they never block the view; the rest stay opaque.
+class TreeField {
+  private readonly geometry: THREE.ConeGeometry;
+  private readonly opaqueMat: THREE.MeshStandardMaterial;
+  private readonly ghostMat: THREE.MeshStandardMaterial;
+  private readonly matrices: THREE.Matrix4[] = [];
+  private readonly pos = new THREE.Vector3();
+  private readonly scale = new THREE.Vector3();
+  private readonly quat = new THREE.Quaternion();
+  private opaque: THREE.InstancedMesh | null = null;
+  private ghost: THREE.InstancedMesh | null = null;
+  private trees: readonly physics.Tree[] | null = null;
+
+  constructor() {
+    // Unit cone with its base at y = 0, so instances scale from the ground up.
+    this.geometry = new THREE.ConeGeometry(1, 1, S.tree.segments);
+    this.geometry.translate(0, 0.5, 0);
+    const base = { color: S.tree.color, roughness: 0.9, flatShading: true };
+    this.opaqueMat = new THREE.MeshStandardMaterial(base);
+    this.ghostMat = new THREE.MeshStandardMaterial({
+      ...base,
+      transparent: true,
+      opacity: S.tree.ghostOpacity,
+      depthWrite: false,
+    });
+  }
+
+  sync(scene: THREE.Scene, trees: readonly physics.Tree[]): void {
+    if (this.opaque && this.trees === trees) return;
+    if (this.opaque && this.ghost) {
+      scene.remove(this.opaque, this.ghost);
+      this.opaque.dispose();
+      this.ghost.dispose();
+    }
+
+    const n = trees.length;
+    this.opaque = new THREE.InstancedMesh(this.geometry, this.opaqueMat, n);
+    this.ghost = new THREE.InstancedMesh(this.geometry, this.ghostMat, n);
+    this.opaque.frustumCulled = false;
+    this.ghost.frustumCulled = false;
+    this.ghost.renderOrder = 10; // after the ground shadow layers
+
+    this.matrices.length = 0;
+    for (let i = 0; i < n; i++) {
+      const tree = trees[i];
+      this.pos.set(tree.position.x, tree.position.y, tree.position.z);
+      this.scale.set(tree.radius, tree.height, tree.radius);
+      this.matrices.push(
+        new THREE.Matrix4().compose(this.pos, this.quat, this.scale),
+      );
+    }
+
+    this.trees = trees;
+    scene.add(this.opaque, this.ghost);
+  }
+
+  // Splits the trees into opaque and translucent by whether each one blocks the
+  // camera -> rider sightline.
+  update(
+    camera: { x: number; z: number },
+    focus: { x: number; z: number },
+  ): void {
+    const trees = this.trees;
+    if (!this.opaque || !this.ghost || !trees) return;
+    let opaque = 0;
+    let ghost = 0;
+    for (let i = 0; i < trees.length; i++) {
+      const matrix = this.matrices[i];
+      if (occludes(trees[i], camera, focus)) this.ghost.setMatrixAt(ghost++, matrix);
+      else this.opaque.setMatrixAt(opaque++, matrix);
+    }
+    this.opaque.count = opaque;
+    this.ghost.count = ghost;
+    this.opaque.instanceMatrix.needsUpdate = true;
+    this.ghost.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// Whether an infinite cylinder of the tree's radius blocks the camera -> rider
+// sightline: nearest approach of the segment (in XZ) to the tree axis.
+function occludes(
+  tree: physics.Tree,
+  camera: { x: number; z: number },
+  focus: { x: number; z: number },
+): boolean {
+  const dx = focus.x - camera.x;
+  const dz = focus.z - camera.z;
+  const len2 = dx * dx + dz * dz;
+  const t =
+    len2 > 1e-9
+      ? THREE.MathUtils.clamp(
+          ((tree.position.x - camera.x) * dx +
+            (tree.position.z - camera.z) * dz) /
+            len2,
+          0,
+          1,
+        )
+      : 0;
+  const cx = camera.x + dx * t;
+  const cz = camera.z + dz * t;
+  return (
+    Math.hypot(tree.position.x - cx, tree.position.z - cz) <= tree.radius
+  );
+}
+
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly camera: THREE.PerspectiveCamera;
   readonly scene = new THREE.Scene();
-  focusIndex = 0; // which rider the chase camera follows
 
   private readonly chase = new ChaseCamera();
+  private readonly trees = new TreeField();
   private readonly views: PogoView[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
@@ -475,6 +586,7 @@ export class Renderer {
   }
 
   render(state: physics.State, dt: number): void {
+    this.trees.sync(this.scene, state.trees);
     const pogos = [state.pogo]; // becomes state.pogos once there are several
     while (this.views.length < pogos.length) {
       const view = new PogoView(
@@ -490,10 +602,9 @@ export class Renderer {
     for (let i = 0; i < pogos.length; i++) this.views[i].update(pogos[i]);
 
     if (pogos.length > 0) {
-      const focus = pogos[
-        THREE.MathUtils.clamp(this.focusIndex, 0, pogos.length - 1)
-      ];
+      const focus = pogos[0]; // pogos[0] is "us"
       this.chase.follow(focus, dt);
+      this.trees.update(this.camera.position, focus.position);
     }
     this.renderer.render(this.scene, this.camera);
   }
