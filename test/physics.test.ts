@@ -1,44 +1,54 @@
 import { describe, expect, it } from "vitest";
 import * as physics from "../src/physics";
 import * as math from "../src/math";
+import { Pilot } from "../src/ai";
 
 const DT = 1 / 240;
-const NO_INPUT: physics.Inputs = { yaw: 0, pitch: 0, roll: 0, mega: false };
+const NO_INPUT = physics.IDLE;
+
+// The state holds several pogos; these tests drive the first.
+const pogo = (s: physics.State) => s.pogos[0];
+const step = (s: physics.State, input: physics.Inputs = NO_INPUT) => {
+  for (const p of s.pogos) p.input = input;
+  physics.step(s, DT);
+};
 
 describe("physics bounce", () => {
   it("spawns above the ground with a vertical stick, at rest", () => {
-    const s = physics.spawn();
-    expect(s.pogo.position.y).toBe(physics.S.stickLength + physics.S.spawnDrop);
-    expect(s.pogo.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
-    expect(s.pogo.velocity).toEqual({ x: 0, y: 0, z: 0 });
-    expect(s.pogo.strain).toBe(0);
+    const p = pogo(physics.spawn());
+    expect(p.position.y).toBe(physics.S.stickLength + physics.S.spawnDrop);
+    expect(p.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+    expect(p.velocity).toEqual({ x: 0, y: 0, z: 0 });
+    expect(p.strain).toBe(0);
   });
 
   it("falls under gravity before touching the ground", () => {
     const s = physics.spawn();
-    for (let i = 0; i < 3; i++) physics.step(s, NO_INPUT, DT);
-    expect(s.pogo.position.y).toBeLessThan(physics.S.stickLength + physics.S.spawnDrop);
-    expect(s.pogo.velocity.y).toBeLessThan(0);
-    expect(s.pogo.strain).toBe(0);
+    for (let i = 0; i < 3; i++) step(s);
+    expect(pogo(s).position.y).toBeLessThan(
+      physics.S.stickLength + physics.S.spawnDrop,
+    );
+    expect(pogo(s).velocity.y).toBeLessThan(0);
+    expect(pogo(s).strain).toBe(0);
   });
 
   it("compresses the stick on contact and rebounds to near its drop height", () => {
     const s = physics.spawn();
-    const startY = s.pogo.position.y;
+    const startY = pogo(s).position.y;
     let touched = false;
     let maxStrain = 0;
     let minY = Infinity;
     let maxAfterBounce = 0;
 
     for (let i = 0; i < 480; i++) {
-      physics.step(s, NO_INPUT, DT);
-      if (s.pogo.strain > 0) {
+      step(s);
+      if (pogo(s).strain > 0) {
         touched = true;
-        maxStrain = Math.max(maxStrain, s.pogo.strain);
+        maxStrain = Math.max(maxStrain, pogo(s).strain);
       } else if (touched) {
-        maxAfterBounce = Math.max(maxAfterBounce, s.pogo.position.y);
+        maxAfterBounce = Math.max(maxAfterBounce, pogo(s).position.y);
       }
-      minY = Math.min(minY, s.pogo.position.y);
+      minY = Math.min(minY, pogo(s).position.y);
     }
 
     expect(touched).toBe(true);
@@ -56,12 +66,12 @@ describe("physics bounce", () => {
     const s = physics.spawn();
     let found = false;
     for (let i = 0; i < 300 && !found; i++) {
-      physics.step(s, NO_INPUT, DT);
-      if (s.pogo.strain > 0) {
+      step(s);
+      if (pogo(s).strain > 0) {
         found = true;
-        const axis = math.rotate(s.pogo.orientation, { x: 0, y: -1, z: 0 });
-        const length = physics.S.stickLength - s.pogo.strain;
-        expect(s.pogo.position.y + length * axis.y).toBeCloseTo(
+        const axis = math.rotate(pogo(s).orientation, { x: 0, y: -1, z: 0 });
+        const length = physics.S.stickLength - pogo(s).strain;
+        expect(pogo(s).position.y + length * axis.y).toBeCloseTo(
           physics.S.groundY,
           6,
         );
@@ -72,41 +82,41 @@ describe("physics bounce", () => {
 
   it("converts a lean into horizontal speed", () => {
     const s = physics.spawn();
-    s.pogo.orientation = math.rotationAboutX(0.4);
-    for (let i = 0; i < 480; i++) physics.step(s, NO_INPUT, DT);
-    expect(Math.hypot(s.pogo.velocity.x, s.pogo.velocity.z)).toBeGreaterThan(1);
+    pogo(s).orientation = math.rotationAboutX(0.4);
+    for (let i = 0; i < 480; i++) step(s);
+    expect(Math.hypot(pogo(s).velocity.x, pogo(s).velocity.z)).toBeGreaterThan(1);
   });
 
   it("resets the pogo when it falls through the ground", () => {
     const s = physics.spawn();
-    s.pogo.position = { x: 5, y: physics.S.groundY - 1, z: 7 };
-    s.pogo.orientation = math.rotationAboutX(Math.PI); // stick points up: can't catch
-    physics.step(s, NO_INPUT, DT);
-    expect(s.pogo.position).toEqual({
+    pogo(s).position = { x: 5, y: physics.S.groundY - 1, z: 7 };
+    pogo(s).orientation = math.rotationAboutX(Math.PI); // stick points up
+    step(s);
+    expect(pogo(s).position).toEqual({
       x: 5,
       y: physics.S.stickLength + physics.S.spawnDrop,
       z: 7,
     });
-    expect(s.pogo.velocity).toEqual({ x: 0, y: 0, z: 0 });
-    expect(s.pogo.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+    expect(pogo(s).velocity).toEqual({ x: 0, y: 0, z: 0 });
+    expect(pogo(s).orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
   });
 
   it("keeps the stick orientation a unit quaternion", () => {
     const s = physics.spawn();
     const input: physics.Inputs = { yaw: 1.3, pitch: 0.7, roll: -0.9, mega: false };
     for (let i = 0; i < 200; i++) {
-      physics.step(s, input, DT);
-      const q = s.pogo.orientation;
+      step(s, input);
+      const q = pogo(s).orientation;
       expect(Math.hypot(q.x, q.y, q.z, q.w)).toBeCloseTo(1, 9);
     }
   });
 
   it("rotates the orientation from input", () => {
     const s = physics.spawn();
-    physics.step(s, { yaw: 0, pitch: 0, roll: 0, mega: false }, DT);
-    expect(s.pogo.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
-    physics.step(s, { yaw: 1, pitch: 0, roll: 0, mega: false }, DT);
-    expect(s.pogo.orientation.y).toBeGreaterThan(0);
+    step(s, { yaw: 0, pitch: 0, roll: 0, mega: false });
+    expect(pogo(s).orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+    step(s, { yaw: 1, pitch: 0, roll: 0, mega: false });
+    expect(pogo(s).orientation.y).toBeGreaterThan(0);
   });
 
   it("mega-bounce adds height", () => {
@@ -114,8 +124,8 @@ describe("physics bounce", () => {
       const s = physics.spawn();
       let top = 0;
       for (let i = 0; i < 480; i++) {
-        physics.step(s, { ...NO_INPUT, mega }, DT);
-        top = Math.max(top, s.pogo.position.y);
+        step(s, { ...NO_INPUT, mega });
+        top = Math.max(top, pogo(s).position.y);
       }
       return top;
     };
@@ -123,11 +133,11 @@ describe("physics bounce", () => {
   });
 
   it("is deterministic for identical step sequences", () => {
-    const a = physics.spawn();
-    const b = physics.spawn();
+    const a = physics.spawn(2);
+    const b = physics.spawn(2);
     for (let i = 0; i < 500; i++) {
-      physics.step(a, NO_INPUT, DT);
-      physics.step(b, NO_INPUT, DT);
+      physics.step(a, DT);
+      physics.step(b, DT);
     }
     expect(a).toEqual(b);
   });
@@ -159,11 +169,12 @@ describe("tree collision", () => {
   const fly = (trees: physics.Tree[], y = 40) => {
     const s = physics.spawn();
     s.trees = trees;
-    s.pogo.position = { x: 0, y, z: -5 };
-    s.pogo.velocity = { x: 0, y: 0, z: -60 };
-    s.pogo.orientation = math.identityQuat();
-    for (let i = 0; i < 30; i++) physics.step(s, NO_INPUT, DT);
-    return s.pogo;
+    const p = pogo(s);
+    p.position = { x: 0, y, z: -5 };
+    p.velocity = { x: 0, y: 0, z: -60 };
+    p.orientation = math.identityQuat();
+    for (let i = 0; i < 30; i++) step(s);
+    return p;
   };
   const tree: physics.Tree = {
     position: { x: 0, y: 0, z: -20 },
@@ -184,5 +195,33 @@ describe("tree collision", () => {
     const miss = fly([], 200);
     expect(high.velocity.z).toBeLessThan(0); // carried on past
     expect(high.velocity.z).toBeCloseTo(miss.velocity.z, 5);
+  });
+});
+
+describe("ai pilot", () => {
+  it("returns bounded controls", () => {
+    const s = physics.spawn();
+    const p = pogo(s);
+    const pilot = new Pilot(p, 3);
+    for (let i = 0; i < 240; i++) {
+      pilot.update(DT);
+      expect(Math.abs(p.input.yaw)).toBeLessThanOrEqual(4 + 1e-9);
+      expect(Math.abs(p.input.pitch)).toBeLessThanOrEqual(3 + 1e-9);
+      expect(p.input.roll).toBe(0);
+      physics.step(s, DT);
+    }
+  });
+
+  it("hops the pogo around", () => {
+    const s = physics.spawn();
+    const p = pogo(s);
+    const pilot = new Pilot(p, 7);
+    const start = { x: p.position.x, z: p.position.z };
+    for (let i = 0; i < 4 * 240; i++) {
+      pilot.update(DT);
+      physics.step(s, DT);
+    }
+    const moved = Math.hypot(p.position.x - start.x, p.position.z - start.z);
+    expect(moved).toBeGreaterThan(30);
   });
 });

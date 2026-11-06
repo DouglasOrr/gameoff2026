@@ -34,19 +34,23 @@ export const S = {
     radiusNear: 2.5,
     radiusFar: 1.75,
     range: 32, // height above stick-length to fade over
-    nearColor: new THREE.Color(0x2563eb),
-    farColor: new THREE.Color(0x0a0e12),
+    farColor: new THREE.Color(0x0a0e12), // the patch fades to this with height
     nearOpacity: 0.85,
     farOpacity: 0.25,
     solidNearOpacity: 0.45, // the grey silhouettes read heavier, so sit lighter
     solidFarOpacity: 0.25,
-    contactColor: new THREE.Color(0x0d9488),
     solidColor: new THREE.Color(0x22272c), // grey silhouette of the box and stick
     lift: 0.05, // height above the ground, so the layers don't z-fight
   },
   rider: {
     size: 4, // edge length of the rider box
-    colors: [0x4f9cf9, 0xf0714b, 0x2fbf71, 0xe8b93b], // cycled across riders
+    // Body colour plus the matching shadow tint, cycled across riders.
+    colors: [
+      { body: new THREE.Color(0x4f9cf9), shadow: new THREE.Color(0x2563eb) },
+      { body: new THREE.Color(0xf0714b), shadow: new THREE.Color(0xd9601f) },
+      { body: new THREE.Color(0x2fbf71), shadow: new THREE.Color(0x1b8f52) },
+      { body: new THREE.Color(0xe8b93b), shadow: new THREE.Color(0xb8860b) },
+    ],
   },
   stick: {
     width: 1.6, // edge of the stick's square cross-section
@@ -57,6 +61,8 @@ export const S = {
     ghostOpacity: 0.25, // trees between the camera and the rider
   },
 };
+
+type Skin = { body: THREE.Color; shadow: THREE.Color };
 
 // Every shadow layer draws only where the stencil is free, then marks those
 // pixels, so overlapping layers never stack into darker patches. Priority comes
@@ -243,9 +249,14 @@ class PogoView {
     x: 0,
     z: 0,
   }));
+  private readonly skin: Skin;
 
-  constructor(color: number) {
-    this.riderMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4 });
+  constructor(skin: Skin) {
+    this.skin = skin;
+    this.riderMat = new THREE.MeshStandardMaterial({
+      color: skin.body,
+      roughness: 0.4,
+    });
     this.rider = new THREE.Mesh(
       new THREE.BoxGeometry(S.rider.size, S.rider.size, S.rider.size),
       this.riderMat,
@@ -264,7 +275,7 @@ class PogoView {
     );
 
     this.patchMat = new THREE.MeshBasicMaterial({
-      color: S.shadow.nearColor,
+      color: skin.shadow,
       transparent: true,
       opacity: S.shadow.nearOpacity,
       depthWrite: false,
@@ -388,8 +399,8 @@ class PogoView {
     this.patch.scale.setScalar(
       THREE.MathUtils.lerp(sh.radiusNear, sh.radiusFar, t),
     );
-    if (strain > 0) this.patchMat.color.copy(sh.contactColor);
-    else this.patchMat.color.copy(sh.nearColor).lerp(sh.farColor, t);
+    if (strain > 0) this.patchMat.color.copy(this.skin.body);
+    else this.patchMat.color.copy(this.skin.shadow).lerp(sh.farColor, t);
     this.patchMat.opacity = THREE.MathUtils.lerp(
       sh.nearOpacity,
       sh.farOpacity,
@@ -587,7 +598,7 @@ export class Renderer {
 
   render(state: physics.State, dt: number): void {
     this.trees.sync(this.scene, state.trees);
-    const pogos = [state.pogo]; // becomes state.pogos once there are several
+    const pogos = state.pogos;
     while (this.views.length < pogos.length) {
       const view = new PogoView(
         S.rider.colors[this.views.length % S.rider.colors.length],

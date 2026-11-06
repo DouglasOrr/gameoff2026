@@ -35,10 +35,11 @@ export type Pogo = {
   velocity: math.Vec3;
   strain: number; // axial compression of the stick (0 when airborne)
   peakStrain: number; // deepest compression of the current contact
+  input: Inputs; // controls applied on the next step
 };
 
 export type State = {
-  pogo: Pogo;
+  pogos: Pogo[];
   trees: Tree[];
 };
 
@@ -55,6 +56,8 @@ export type Inputs = {
   mega: boolean; // hold to add the mega-bounce impulse during extension
 };
 
+export const IDLE: Inputs = { yaw: 0, pitch: 0, roll: 0, mega: false };
+
 export function makePogo(x = 0, z = 0): Pogo {
   return {
     position: { x, y: S.stickLength + S.spawnDrop, z },
@@ -62,23 +65,13 @@ export function makePogo(x = 0, z = 0): Pogo {
     velocity: { x: 0, y: 0, z: 0 },
     strain: 0,
     peakStrain: 0,
-  };
-}
-
-// Deterministic PRNG (mulberry32), so the scattered trees are reproducible.
-function rng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), a | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    input: { ...IDLE },
   };
 }
 
 function scatterTrees(seed: number): Tree[] {
   const t = S.trees;
-  const rand = rng(seed);
+  const rand = math.rng(seed);
   const trees: Tree[] = [];
   for (let i = 0; i < t.count; i++) {
     let x: number;
@@ -96,11 +89,12 @@ function scatterTrees(seed: number): Tree[] {
   return trees;
 }
 
-export function spawn(x = 0, z = 0): State {
-  return {
-    pogo: makePogo(x, z),
-    trees: scatterTrees(S.trees.seed),
-  };
+export function spawn(count = 1): State {
+  const pogos: Pogo[] = [];
+  for (let i = 0; i < count; i++) {
+    pogos.push(makePogo(i * S.stickLength * 3, 0));
+  }
+  return { pogos, trees: scatterTrees(S.trees.seed) };
 }
 
 // Axial compression that puts the stick tip on the ground (0 when airborne).
@@ -179,17 +173,22 @@ function bounceOffTree(
   }
 }
 
-export function step(s: State, input: Inputs, dt: number): void {
-  const { position: p, velocity: v } = s.pogo;
+export function step(state: State, dt: number): void {
+  for (const pogo of state.pogos) stepPogo(pogo, state.trees, dt);
+}
+
+function stepPogo(pogo: Pogo, trees: readonly Tree[], dt: number): void {
+  const input = pogo.input;
+  const { position: p, velocity: v } = pogo;
   const L = S.stickLength;
   const down = { x: 0, y: -1, z: 0 };
 
-  const axisBefore = math.rotate(s.pogo.orientation, down);
-  let q = math.mulQuat(math.rotationAboutY(input.yaw * dt), s.pogo.orientation);
+  const axisBefore = math.rotate(pogo.orientation, down);
+  let q = math.mulQuat(math.rotationAboutY(input.yaw * dt), pogo.orientation);
   q = math.mulQuat(q, math.rotationAboutX(input.pitch * dt));
   q = math.mulQuat(q, math.rotationAboutZ(input.roll * dt));
-  s.pogo.orientation = math.normalizeQuat(q);
-  const axis = math.rotate(s.pogo.orientation, down);
+  pogo.orientation = math.normalizeQuat(q);
+  const axis = math.rotate(pogo.orientation, down);
 
   const strain = contactStrain(p, axis);
 
@@ -198,7 +197,7 @@ export function step(s: State, input: Inputs, dt: number): void {
   let az = 0;
 
   if (strain > 0) {
-    s.pogo.peakStrain = Math.max(s.pogo.peakStrain, strain);
+    pogo.peakStrain = Math.max(pogo.peakStrain, strain);
 
     const slipX = v.x + (L * (axis.x - axisBefore.x)) / dt;
     const slipZ = v.z + (L * (axis.z - axisBefore.z)) / dt;
@@ -215,7 +214,7 @@ export function step(s: State, input: Inputs, dt: number): void {
     ax -= friction * Math.tanh(slipX * S.frictionSlip);
     az -= friction * Math.tanh(slipZ * S.frictionSlip);
   } else {
-    s.pogo.peakStrain = 0;
+    pogo.peakStrain = 0;
   }
 
   const speed = Math.hypot(v.x, v.y, v.z);
@@ -235,11 +234,11 @@ export function step(s: State, input: Inputs, dt: number): void {
 
   // Trees are solid: rebound off any the pogo overlaps, at the rider and at the
   // foot of the stick.
-  for (const tree of s.trees) {
+  for (const tree of trees) {
     bounceOffTree(p, v, tree, p.x, p.y, p.z, S.riderRadius);
   }
   const footLen = S.stickLength - contactStrain(p, axis);
-  for (const tree of s.trees) {
+  for (const tree of trees) {
     bounceOffTree(
       p,
       v,
@@ -252,13 +251,13 @@ export function step(s: State, input: Inputs, dt: number): void {
   }
 
   // Recompute strain from the new pose so the rendered foot sits on the floor.
-  s.pogo.strain = contactStrain(p, axis);
+  pogo.strain = contactStrain(p, axis);
 
   // Fixed speed boost per-bounce: bounceBoost (always) +megaBoost (control)
-  const released = strain - s.pogo.strain;
-  if (released > 0 && s.pogo.peakStrain > 0) {
+  const released = strain - pogo.strain;
+  if (released > 0 && pogo.peakStrain > 0) {
     const boost = S.bounceBoost + (input.mega ? S.megaBoost : 0);
-    const dv = (boost * released) / s.pogo.peakStrain;
+    const dv = (boost * released) / pogo.peakStrain;
     v.x -= axis.x * dv;
     v.y -= axis.y * dv;
     v.z -= axis.z * dv;
@@ -266,6 +265,6 @@ export function step(s: State, input: Inputs, dt: number): void {
 
   // Crash: the pogo fell over and the rider reached the ground. Reset in place.
   if (p.y <= S.groundY) {
-    Object.assign(s.pogo, makePogo(p.x, p.z));
+    Object.assign(pogo, makePogo(p.x, p.z));
   }
 }
