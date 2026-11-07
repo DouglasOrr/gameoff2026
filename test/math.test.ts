@@ -19,4 +19,30 @@ describe("math", () => {
     const q = math.rotationAboutZ(0.7);
     expect(Math.hypot(q.x, q.y, q.z, q.w)).toBeCloseTo(1, 10);
   });
+
+  const h = { x: 1, y: 1, z: 1 };
+
+  it("intersectSegmentBox is true for a segment crossing the box", () => {
+    expect(
+      math.intersectSegmentBox({ x: 0, y: 0, z: -2 }, { x: 0, y: 0, z: 2 }, h),
+    ).toBe(true);
+  });
+
+  it("intersectSegmentBox is true when an end lies inside", () => {
+    expect(
+      math.intersectSegmentBox({ x: 0, y: 0, z: -2 }, { x: 0, y: 0, z: 0.5 }, h),
+    ).toBe(true);
+  });
+
+  it("intersectSegmentBox is false for a segment that stops short", () => {
+    expect(
+      math.intersectSegmentBox({ x: 0, y: 0, z: -2 }, { x: 0, y: 0, z: -1.5 }, h),
+    ).toBe(false);
+  });
+
+  it("intersectSegmentBox is false when parallel and outside", () => {
+    expect(
+      math.intersectSegmentBox({ x: 2, y: 0, z: -1 }, { x: 2, y: 0, z: 1 }, h),
+    ).toBe(false);
+  });
 });

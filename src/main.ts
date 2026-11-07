@@ -13,7 +13,7 @@ window.addEventListener("resize", () => renderer.resize());
 renderer.resize();
 
 const input = new Input(canvas);
-const state = physics.spawn(2);
+const state = physics.makeState(2);
 // pogos[0] is the player; the rest are flown by pilots.
 const pilots = state.pogos.slice(1).map((pogo, i) => new Pilot(pogo, i + 1));
 

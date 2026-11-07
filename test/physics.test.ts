@@ -14,16 +14,19 @@ const step = (s: physics.State, input: physics.Inputs = NO_INPUT) => {
 };
 
 describe("physics bounce", () => {
-  it("spawns above the ground with a vertical stick, at rest", () => {
-    const p = pogo(physics.spawn());
+  it("spawns above the ground, upright and at rest", () => {
+    const p = pogo(physics.makeState());
     expect(p.position.y).toBe(physics.S.stickLength + physics.S.spawnDrop);
-    expect(p.orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+    const axis = math.rotate(p.orientation, { x: 0, y: -1, z: 0 });
+    expect(axis.x).toBeCloseTo(0, 12);
+    expect(axis.y).toBeCloseTo(-1, 12);
+    expect(axis.z).toBeCloseTo(0, 12);
     expect(p.velocity).toEqual({ x: 0, y: 0, z: 0 });
     expect(p.strain).toBe(0);
   });
 
   it("falls under gravity before touching the ground", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     for (let i = 0; i < 3; i++) step(s);
     expect(pogo(s).position.y).toBeLessThan(
       physics.S.stickLength + physics.S.spawnDrop,
@@ -33,7 +36,7 @@ describe("physics bounce", () => {
   });
 
   it("compresses the stick on contact and rebounds to near its drop height", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     const startY = pogo(s).position.y;
     let touched = false;
     let maxStrain = 0;
@@ -63,7 +66,7 @@ describe("physics bounce", () => {
   });
 
   it("keeps the foot on the ground while in contact", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     let found = false;
     for (let i = 0; i < 300 && !found; i++) {
       step(s);
@@ -81,16 +84,16 @@ describe("physics bounce", () => {
   });
 
   it("converts a lean into horizontal speed", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     pogo(s).orientation = math.rotationAboutX(0.4);
     for (let i = 0; i < 480; i++) step(s);
     expect(Math.hypot(pogo(s).velocity.x, pogo(s).velocity.z)).toBeGreaterThan(1);
   });
 
-  it("resets the pogo when it falls through the ground", () => {
-    const s = physics.spawn();
+  it("resets the pogo upright when it falls through the ground", () => {
+    const s = physics.makeState();
     pogo(s).position = { x: 5, y: physics.S.groundY - 1, z: 7 };
-    pogo(s).orientation = math.rotationAboutX(Math.PI); // stick points up
+    pogo(s).orientation = math.rotationAboutX(Math.PI); // stick points up, facing -z
     step(s);
     expect(pogo(s).position).toEqual({
       x: 5,
@@ -98,11 +101,17 @@ describe("physics bounce", () => {
       z: 7,
     });
     expect(pogo(s).velocity).toEqual({ x: 0, y: 0, z: 0 });
-    expect(pogo(s).orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+
+    // Upright, still facing the way it crashed.
+    const q = pogo(s).orientation;
+    const axis = math.rotate(q, { x: 0, y: -1, z: 0 });
+    expect(axis.y).toBeCloseTo(-1, 12);
+    const facing = math.rotate(q, { x: 0, y: 0, z: 1 });
+    expect(facing.z).toBeCloseTo(-1, 12);
   });
 
   it("keeps the stick orientation a unit quaternion", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     const input: physics.Inputs = { yaw: 1.3, pitch: 0.7, roll: -0.9, mega: false };
     for (let i = 0; i < 200; i++) {
       step(s, input);
@@ -112,16 +121,17 @@ describe("physics bounce", () => {
   });
 
   it("rotates the orientation from input", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
+    const y0 = pogo(s).orientation.y;
     step(s, { yaw: 0, pitch: 0, roll: 0, mega: false });
-    expect(pogo(s).orientation).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+    expect(pogo(s).orientation.y).toBeCloseTo(y0, 12);
     step(s, { yaw: 1, pitch: 0, roll: 0, mega: false });
-    expect(pogo(s).orientation.y).toBeGreaterThan(0);
+    expect(pogo(s).orientation.y).toBeGreaterThan(y0);
   });
 
   it("mega-bounce adds height", () => {
     const maxHeight = (mega: boolean) => {
-      const s = physics.spawn();
+      const s = physics.makeState();
       let top = 0;
       for (let i = 0; i < 480; i++) {
         step(s, { ...NO_INPUT, mega });
@@ -133,8 +143,8 @@ describe("physics bounce", () => {
   });
 
   it("is deterministic for identical step sequences", () => {
-    const a = physics.spawn(2);
-    const b = physics.spawn(2);
+    const a = physics.makeState(2);
+    const b = physics.makeState(2);
     for (let i = 0; i < 500; i++) {
       physics.step(a, DT);
       physics.step(b, DT);
@@ -143,10 +153,17 @@ describe("physics bounce", () => {
   });
 });
 
-describe("tree scatter", () => {
+describe("trees", () => {
   it("puts cones on the ground, clear of the spawn", () => {
-    const s = physics.spawn();
-    const t = physics.S.trees;
+    const s = physics.makeState();
+    const t = {
+      count: 90,
+      clear: 70,
+      minRadius: 6,
+      maxRadius: 16,
+      minHeight: 40,
+      maxHeight: 120,
+    };
     expect(s.trees).toHaveLength(t.count);
     for (const tree of s.trees) {
       expect(tree.position.y).toBe(physics.S.groundY);
@@ -161,13 +178,13 @@ describe("tree scatter", () => {
   });
 
   it("is reproducible for a fixed seed", () => {
-    expect(physics.spawn().trees).toEqual(physics.spawn().trees);
+    expect(physics.makeState().trees).toEqual(physics.makeState().trees);
   });
 });
 
 describe("tree collision", () => {
   const fly = (trees: physics.Tree[], y = 40) => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     s.trees = trees;
     const p = pogo(s);
     p.position = { x: 0, y, z: -5 };
@@ -198,9 +215,100 @@ describe("tree collision", () => {
   });
 });
 
+describe("gates", () => {
+  it("starts every pogo at the first gate", () => {
+    const s = physics.makeState(2);
+    expect(s.gates.length).toBeGreaterThan(1);
+    for (const p of s.pogos) expect(p.nextGate).toBe(0);
+  });
+
+  it("starts the player in front of the first gate, facing through it", () => {
+    const s = physics.makeState();
+    const p = s.pogos[0];
+    const g = s.gates[0];
+    const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
+
+    // Behind the gate: the offset from gate to rider opposes the through axis.
+    const behind =
+      (p.position.x - g.position.x) * through.x +
+      (p.position.z - g.position.z) * through.z;
+    expect(behind).toBeLessThan(0);
+
+    // Facing the gate: the rider's forward matches the gate's through axis.
+    const facing = math.rotate(p.orientation, { x: 0, y: 0, z: 1 });
+    expect(facing.x).toBeCloseTo(through.x, 12);
+    expect(facing.z).toBeCloseTo(through.z, 12);
+    expect(facing.y).toBeCloseTo(0, 12);
+  });
+
+  it("advances to the next gate when the rider passes through it", () => {
+    const s = physics.makeState();
+    const p = pogo(s);
+    p.position = { ...s.gates[0].position };
+    step(s);
+    expect(p.nextGate).toBe(1);
+  });
+
+  it("wraps to the first gate after the last", () => {
+    const s = physics.makeState();
+    s.trees = [];
+    const p = pogo(s);
+    p.nextGate = s.gates.length - 1;
+    p.position = { ...s.gates[p.nextGate].position };
+    step(s);
+    expect(p.nextGate).toBe(0);
+  });
+
+  it("ignores a gate the rider passes beside", () => {
+    const s = physics.makeState();
+    const p = pogo(s);
+    const g = s.gates[0];
+    const across = math.rotate(g.orientation, { x: 1, y: 0, z: 0 });
+    p.position = {
+      x: g.position.x + across.x * g.width,
+      y: g.position.y,
+      z: g.position.z + across.z * g.width,
+    };
+    step(s);
+    expect(p.nextGate).toBe(0);
+  });
+
+  it("passes a rotated gate along its own axis", () => {
+    const s = physics.makeState();
+    const p = pogo(s);
+    const g = s.gates[0];
+    g.orientation = math.rotationAboutY(0.7);
+    const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
+    p.position = {
+      x: g.position.x + through.x * g.depth * 0.4,
+      y: g.position.y,
+      z: g.position.z + through.z * g.depth * 0.4,
+    };
+    step(s);
+    expect(p.nextGate).toBe(1);
+  });
+
+  it("does not let a fast rider skip its next gate", () => {
+    const s = physics.makeState();
+    s.trees = [];
+    const p = pogo(s);
+    const g = s.gates[0];
+    const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
+    // Start short of the gate and cross it in a single step.
+    p.position = {
+      x: g.position.x - through.x * 20,
+      y: g.position.y,
+      z: g.position.z - through.z * 20,
+    };
+    p.velocity = { x: through.x * 9600, y: 0, z: through.z * 9600 };
+    step(s);
+    expect(p.nextGate).toBe(1);
+  });
+});
+
 describe("ai pilot", () => {
   it("returns bounded controls", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     const p = pogo(s);
     const pilot = new Pilot(p, 3);
     for (let i = 0; i < 240; i++) {
@@ -213,7 +321,7 @@ describe("ai pilot", () => {
   });
 
   it("hops the pogo around", () => {
-    const s = physics.spawn();
+    const s = physics.makeState();
     const p = pogo(s);
     const pilot = new Pilot(p, 7);
     const start = { x: p.position.x, z: p.position.z };

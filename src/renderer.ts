@@ -55,6 +55,15 @@ export const S = {
   stick: {
     width: 1.6, // edge of the stick's square cross-section
   },
+  gate: {
+    colors: {
+      next: 0x3ad17a, // the player's next gate
+      soon: 0xe8c33b, // the one after that
+      other: 0x55606b,
+    },
+    opacity: 0.4, // translucent
+    border: 0.15, // frame thickness, as a fraction of the smaller half-size
+  },
   tree: {
     color: 0x2f7d4e,
     segments: 8, // cone is low-poly, to match the toon look
@@ -550,6 +559,97 @@ function occludes(
   );
 }
 
+// A picture-frame outline in the gate's own plane (local X across, Y up, Z
+// through): a rectangle with a rectangular hole, extruded to the gate's depth.
+function frameGeometry(gate: physics.Gate): THREE.ExtrudeGeometry {
+  const w = gate.width / 2;
+  const h = gate.height / 2;
+  const b = Math.min(w, h) * S.gate.border;
+
+  const rect = (p: THREE.Path, inset: number): void => {
+    const x = w - inset;
+    const y = h - inset;
+    p.moveTo(-x, -y);
+    p.lineTo(x, -y);
+    p.lineTo(x, y);
+    p.lineTo(-x, y);
+    p.closePath();
+  };
+
+  const shape = new THREE.Shape();
+  rect(shape, 0);
+  const hole = new THREE.Path();
+  rect(hole, b);
+  shape.holes.push(hole);
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: gate.depth,
+    bevelEnabled: false,
+  });
+  geo.translate(0, 0, -gate.depth / 2); // extrudes forward; centre it
+  return geo;
+}
+
+// The gates, each a translucent frame with a see-through middle.
+// The player's next gate is green, the one after it yellow, the rest grey.
+class GateField {
+  private readonly group = new THREE.Group();
+  private readonly mats: THREE.MeshBasicMaterial[] = [];
+  private readonly geoms: THREE.BufferGeometry[] = [];
+  private gates: readonly physics.Gate[] | null = null;
+
+  sync(scene: THREE.Scene, gates: readonly physics.Gate[]): void {
+    if (this.gates === gates) return;
+    for (const mat of this.mats) mat.dispose();
+    for (const geo of this.geoms) geo.dispose();
+    this.mats.length = 0;
+    this.geoms.length = 0;
+    this.group.clear();
+
+    for (const gate of gates) {
+      const geo = frameGeometry(gate);
+      const mat = new THREE.MeshBasicMaterial({
+        color: S.gate.colors.other,
+        transparent: true,
+        opacity: S.gate.opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        // The frame's bottom sits on the ground plane; bias it toward the camera
+        // so those coplanar fragments don't z-fight with the floor.
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(gate.position.x, gate.position.y, gate.position.z);
+      mesh.quaternion.set(
+        gate.orientation.x,
+        gate.orientation.y,
+        gate.orientation.z,
+        gate.orientation.w,
+      );
+      this.geoms.push(geo);
+      this.mats.push(mat);
+      this.group.add(mesh);
+    }
+
+    this.gates = gates;
+    if (!this.group.parent) scene.add(this.group);
+  }
+
+  update(playerNext: number): void {
+    for (let i = 0; i < this.mats.length; i++) {
+      const color =
+        i === playerNext
+          ? S.gate.colors.next
+          : i === (playerNext + 1) % this.mats.length
+            ? S.gate.colors.soon
+            : S.gate.colors.other;
+      this.mats[i].color.setHex(color);
+    }
+  }
+}
+
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly camera: THREE.PerspectiveCamera;
@@ -557,6 +657,7 @@ export class Renderer {
 
   private readonly chase = new ChaseCamera();
   private readonly trees = new TreeField();
+  private readonly gates = new GateField();
   private readonly views: PogoView[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
@@ -598,6 +699,7 @@ export class Renderer {
 
   render(state: physics.State, dt: number): void {
     this.trees.sync(this.scene, state.trees);
+    this.gates.sync(this.scene, state.gates);
     const pogos = state.pogos;
     while (this.views.length < pogos.length) {
       const view = new PogoView(
@@ -616,6 +718,7 @@ export class Renderer {
       const focus = pogos[0]; // pogos[0] is "us"
       this.chase.follow(focus, dt);
       this.trees.update(this.camera.position, focus.position);
+      this.gates.update(focus.nextGate);
     }
     this.renderer.render(this.scene, this.camera);
   }

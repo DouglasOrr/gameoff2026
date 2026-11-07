@@ -32,6 +32,11 @@ export function normalizeQuat(q: Quat): Quat {
   return { x: q.x / n, y: q.y / n, z: q.z / n, w: q.w / n };
 }
 
+// Inverse rotation for a unit quaternion: maps a world vector into its frame.
+export function conjugateQuat(q: Quat): Quat {
+  return { x: -q.x, y: -q.y, z: -q.z, w: q.w };
+}
+
 // Shortest-arc rotation taking unit vector a onto unit vector b.
 export function fromTo(a: Vec3, b: Vec3): Quat {
   const d = a.x * b.x + a.y * b.y + a.z * b.z;
@@ -53,6 +58,29 @@ export function fromTo(a: Vec3, b: Vec3): Quat {
     z: a.x * b.y - a.y * b.x,
     w: 1 + d,
   });
+}
+
+// Slab test: does the segment a -> b intersect the origin-centred box with the
+// given half sizes?
+export function intersectSegmentBox(a: Vec3, b: Vec3, hSize: Vec3): boolean {
+  const o = [a.x, a.y, a.z];
+  const d = [b.x - a.x, b.y - a.y, b.z - a.z];
+  const h = [hSize.x, hSize.y, hSize.z];
+  let tmin = 0;
+  let tmax = 1;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(d[i]) < 1e-9) {
+      if (Math.abs(o[i]) > h[i]) return false;
+    } else {
+      let t1 = (-h[i] - o[i]) / d[i];
+      let t2 = (h[i] - o[i]) / d[i];
+      if (t1 > t2) [t1, t2] = [t2, t1];
+      tmin = Math.max(tmin, t1);
+      tmax = Math.min(tmax, t2);
+      if (tmin > tmax) return false;
+    }
+  }
+  return true;
 }
 
 export function rotationAboutX(angle: number): Quat {

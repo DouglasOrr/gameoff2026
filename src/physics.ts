@@ -17,16 +17,6 @@ export const S = {
   treeBounce: 0.5, // restitution when rebounding off a tree
   riderRadius: 2.5, // pogo collision radius at the rider
   footRadius: 1, // pogo collision radius at the stick's foot
-  trees: {
-    seed: 1, // fixed, so the scatter is reproducible
-    count: 90,
-    spread: 900, // scattered within +/- this of the origin
-    clear: 70, // keep this radius around the origin clear
-    minRadius: 6,
-    maxRadius: 16,
-    minHeight: 40,
-    maxHeight: 120,
-  },
 };
 
 export type Pogo = {
@@ -34,19 +24,30 @@ export type Pogo = {
   orientation: math.Quat; // rider -> foot is local -Y
   velocity: math.Vec3;
   strain: number; // axial compression of the stick (0 when airborne)
-  peakStrain: number; // deepest compression of the current contact
-  input: Inputs; // controls applied on the next step
+  peakStrain: number;
+  input: Inputs;
+  nextGate: number;
 };
 
 export type State = {
   pogos: Pogo[];
   trees: Tree[];
+  gates: Gate[];
 };
 
 export type Tree = {
   position: math.Vec3; // base of the cone, on the ground
   radius: number; // base radius of the cone
   height: number;
+};
+
+// A checkpoint: an oriented box the rider passes through along local Z.
+export type Gate = {
+  position: math.Vec3;
+  orientation: math.Quat; // identity faces +z
+  width: number;
+  height: number;
+  depth: number;
 };
 
 export type Inputs = {
@@ -58,20 +59,34 @@ export type Inputs = {
 
 export const IDLE: Inputs = { yaw: 0, pitch: 0, roll: 0, mega: false };
 
-export function makePogo(x = 0, z = 0): Pogo {
+export function makePogo(
+  x = 0,
+  z = 0,
+  orientation: math.Quat = math.identityQuat(),
+): Pogo {
   return {
     position: { x, y: S.stickLength + S.spawnDrop, z },
-    orientation: math.identityQuat(),
+    orientation,
     velocity: { x: 0, y: 0, z: 0 },
     strain: 0,
     peakStrain: 0,
     input: { ...IDLE },
+    nextGate: 0,
   };
 }
 
-function scatterTrees(seed: number): Tree[] {
-  const t = S.trees;
-  const rand = math.rng(seed);
+function makeTrees(): Tree[] {
+  const t = {
+    seed: 1, // fixed, so the scatter is reproducible
+    count: 90,
+    spread: 900, // scattered within +/- this of the origin
+    clear: 70, // keep this radius around the origin clear
+    minRadius: 6,
+    maxRadius: 16,
+    minHeight: 40,
+    maxHeight: 120,
+  };
+  const rand = math.rng(t.seed);
   const trees: Tree[] = [];
   for (let i = 0; i < t.count; i++) {
     let x: number;
@@ -89,12 +104,52 @@ function scatterTrees(seed: number): Tree[] {
   return trees;
 }
 
-export function spawn(count = 1): State {
+export function makeGates(): Gate[] {
+  const g = {
+    count: 8,
+    radius: 600, // gates sit on a circle of this radius
+    width: 120, // span across the gate
+    height: 160, // span vertically
+    depth: 20, // span along the gate
+  };
+  const gates: Gate[] = [];
+  for (let i = 0; i < g.count; i++) {
+    const theta = (i / g.count) * Math.PI * 2;
+    gates.push({
+      position: {
+        x: g.radius * Math.sin(theta),
+        y: g.height / 2,
+        z: g.radius * Math.cos(theta),
+      },
+      orientation: math.rotationAboutY(theta + Math.PI / 2), // tangent to the loop
+      width: g.width,
+      height: g.height,
+      depth: g.depth,
+    });
+  }
+  return gates;
+}
+
+export function makeState(count = 1): State {
+  const gates = makeGates();
+  const start = gates[0];
+  const through = math.rotate(start.orientation, { x: 0, y: 0, z: 1 });
+  const across = math.rotate(start.orientation, { x: 1, y: 0, z: 0 });
+  const back = 3 * S.stickLength; // start this far short of the first gate
+
   const pogos: Pogo[] = [];
   for (let i = 0; i < count; i++) {
-    pogos.push(makePogo(i * S.stickLength * 3, 0));
+    // Side by side across the track, all facing through the first gate.
+    const lane = (i - (count - 1) / 2) * S.stickLength * 3;
+    pogos.push(
+      makePogo(
+        start.position.x - through.x * back + across.x * lane,
+        start.position.z - through.z * back + across.z * lane,
+        start.orientation,
+      ),
+    );
   }
-  return { pogos, trees: scatterTrees(S.trees.seed) };
+  return { pogos, trees: makeTrees(), gates };
 }
 
 // Axial compression that puts the stick tip on the ground (0 when airborne).
@@ -173,13 +228,41 @@ function bounceOffTree(
   }
 }
 
-export function step(state: State, dt: number): void {
-  for (const pogo of state.pogos) stepPogo(pogo, state.trees, dt);
+// Whether the segment the rider swept, `prev` -> `p`, meets the gate's oriented
+// box. Testing the segment rather than the point means a fast rider cannot skip
+// a gate between two steps.
+function hitsGate(prev: math.Vec3, p: math.Vec3, gate: Gate): boolean {
+  const inv = math.conjugateQuat(gate.orientation);
+  const a = math.rotate(inv, {
+    x: prev.x - gate.position.x,
+    y: prev.y - gate.position.y,
+    z: prev.z - gate.position.z,
+  });
+  const b = math.rotate(inv, {
+    x: p.x - gate.position.x,
+    y: p.y - gate.position.y,
+    z: p.z - gate.position.z,
+  });
+  return math.intersectSegmentBox(a, b, {
+    x: gate.width / 2,
+    y: gate.height / 2,
+    z: gate.depth / 2,
+  });
 }
 
-function stepPogo(pogo: Pogo, trees: readonly Tree[], dt: number): void {
+export function step(state: State, dt: number): void {
+  for (const pogo of state.pogos) stepPogo(pogo, state.trees, state.gates, dt);
+}
+
+function stepPogo(
+  pogo: Pogo,
+  trees: readonly Tree[],
+  gates: readonly Gate[],
+  dt: number,
+): void {
   const input = pogo.input;
   const { position: p, velocity: v } = pogo;
+  const prev = { x: p.x, y: p.y, z: p.z }; // before this step moves p
   const L = S.stickLength;
   const down = { x: 0, y: -1, z: 0 };
 
@@ -263,8 +346,16 @@ function stepPogo(pogo: Pogo, trees: readonly Tree[], dt: number): void {
     v.z -= axis.z * dv;
   }
 
-  // Crash: the pogo fell over and the rider reached the ground. Reset in place.
+  // Advance once the rider has passed through the next gate.
+  if (hitsGate(prev, p, gates[pogo.nextGate])) {
+    pogo.nextGate = (pogo.nextGate + 1) % gates.length;
+  }
+
+  // Crash: the pogo fell over and the rider reached the ground. Reset in place,
+  // keeping the heading it was facing.
   if (p.y <= S.groundY) {
-    Object.assign(pogo, makePogo(p.x, p.z));
+    const facing = math.rotate(pogo.orientation, { x: 0, y: 0, z: 1 });
+    const upright = math.rotationAboutY(Math.atan2(facing.x, facing.z));
+    Object.assign(pogo, makePogo(p.x, p.z, upright));
   }
 }
