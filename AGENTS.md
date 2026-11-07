@@ -5,7 +5,7 @@ Structure:
 - `docs` for user-authored documentation - do not edit unless asked explicitly
   - `docs/design.md` for game design
   - `docs/architecture.md` for code architecture
-- `prototypes` for standalone prototypes
+- `prototypes` for standalone prototypes (ignore these unless prompted)
 
 Preferences:
 
