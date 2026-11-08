@@ -50,6 +50,11 @@ export type Gate = {
   depth: number;
 };
 
+export type Level = {
+  gates: Gate[];
+  trees: Tree[];
+};
+
 export type Inputs = {
   yaw: number; // rad/s about world Y
   pitch: number; // rad/s about local X
@@ -75,64 +80,10 @@ export function makePogo(
   };
 }
 
-function makeTrees(): Tree[] {
-  const t = {
-    seed: 1, // fixed, so the scatter is reproducible
-    count: 90,
-    spread: 900, // scattered within +/- this of the origin
-    clear: 70, // keep this radius around the origin clear
-    minRadius: 6,
-    maxRadius: 16,
-    minHeight: 40,
-    maxHeight: 120,
-  };
-  const rand = math.rng(t.seed);
-  const trees: Tree[] = [];
-  for (let i = 0; i < t.count; i++) {
-    let x: number;
-    let z: number;
-    do {
-      x = (rand() * 2 - 1) * t.spread;
-      z = (rand() * 2 - 1) * t.spread;
-    } while (Math.hypot(x, z) < t.clear);
-    trees.push({
-      position: { x, y: S.groundY, z },
-      radius: t.minRadius + (t.maxRadius - t.minRadius) * rand(),
-      height: t.minHeight + (t.maxHeight - t.minHeight) * rand(),
-    });
-  }
-  return trees;
-}
-
-export function makeGates(): Gate[] {
-  const g = {
-    count: 8,
-    radius: 600, // gates sit on a circle of this radius
-    width: 120, // span across the gate
-    height: 160, // span vertically
-    depth: 20, // span along the gate
-  };
-  const gates: Gate[] = [];
-  for (let i = 0; i < g.count; i++) {
-    const theta = (i / g.count) * Math.PI * 2;
-    gates.push({
-      position: {
-        x: g.radius * Math.sin(theta),
-        y: g.height / 2,
-        z: g.radius * Math.cos(theta),
-      },
-      orientation: math.rotationAboutY(theta + Math.PI / 2), // tangent to the loop
-      width: g.width,
-      height: g.height,
-      depth: g.depth,
-    });
-  }
-  return gates;
-}
-
-export function makeState(count = 1): State {
-  const gates = makeGates();
-  const start = gates[0];
+// Line up `count` riders across the track behind the first gate, all facing
+// through it.
+export function loadLevel(level: Level, count: number): State {
+  const start = level.gates[0];
   const through = math.rotate(start.orientation, { x: 0, y: 0, z: 1 });
   const across = math.rotate(start.orientation, { x: 1, y: 0, z: 0 });
   const back = 3 * S.stickLength; // start this far short of the first gate
@@ -149,7 +100,7 @@ export function makeState(count = 1): State {
       ),
     );
   }
-  return { pogos, trees: makeTrees(), gates };
+  return { pogos, trees: level.trees, gates: level.gates };
 }
 
 // Axial compression that puts the stick tip on the ground (0 when airborne).

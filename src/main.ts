@@ -1,4 +1,5 @@
 import * as physics from "./physics";
+import { demo } from "./levels/demo";
 import { Pilot } from "./ai";
 import { Input } from "./input";
 import { Renderer } from "./renderer";
@@ -13,7 +14,7 @@ window.addEventListener("resize", () => renderer.resize());
 renderer.resize();
 
 const input = new Input(canvas);
-const state = physics.makeState(2);
+const state = physics.loadLevel(demo, 2);
 // pogos[0] is the player; the rest are flown by pilots.
 const pilots = state.pogos.slice(1).map((pogo, i) => new Pilot(pogo, i + 1));
 
