@@ -4,8 +4,14 @@ import type { Inputs } from "./physics";
 
 export const S = {
   leanRate: 1.5, // rad/s from WASD
-  mouseSens: 0.0025, // rad per pixel of mouse movement
+  mouseSens: 0.0025, // rad of yaw per pixel of mouse movement
+  pitchSens: 0.0025, // rad of camera pitch per pixel of vertical mouse movement
+  pitchLimit: 0.7, // how far the camera may peek up or down (rad)
 };
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi);
+}
 
 export class Input {
   private readonly held: Record<string, boolean> = {
@@ -16,12 +22,16 @@ export class Input {
     shift: false,
   };
   private mouseDx = 0;
+  private mouseDy = 0;
+  cameraPitch = 0; // camera look up/down, driven by vertical mouse movement
 
   constructor(canvas: HTMLCanvasElement) {
     // Click to capture the mouse; movementX then drives the yaw.
     canvas.addEventListener("click", () => canvas.requestPointerLock());
     canvas.addEventListener("mousemove", (e) => {
-      if (document.pointerLockElement === canvas) this.mouseDx += e.movementX;
+      if (document.pointerLockElement !== canvas) return;
+      this.mouseDx += e.movementX;
+      this.mouseDy += e.movementY;
     });
     window.addEventListener("keydown", (e) => this.onKey(e, true));
     window.addEventListener("keyup", (e) => this.onKey(e, false));
@@ -39,7 +49,13 @@ export class Input {
       roll: ((d ? 1 : 0) - (a ? 1 : 0)) * S.leanRate,
       mega: shift,
     };
+    this.cameraPitch = clamp(
+      this.cameraPitch - this.mouseDy * S.pitchSens,
+      -S.pitchLimit,
+      S.pitchLimit,
+    );
     this.mouseDx = 0;
+    this.mouseDy = 0;
     return input;
   }
 

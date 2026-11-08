@@ -352,10 +352,12 @@ function stepPogo(
   }
 
   // Crash: the pogo fell over and the rider reached the ground. Reset in place,
-  // keeping the heading it was facing.
+  // keeping the heading and the gate progress.
   if (p.y <= S.groundY) {
     const facing = math.rotate(pogo.orientation, { x: 0, y: 0, z: 1 });
     const upright = math.rotationAboutY(Math.atan2(facing.x, facing.z));
+    const nextGate = pogo.nextGate;
     Object.assign(pogo, makePogo(p.x, p.z, upright));
+    pogo.nextGate = nextGate;
   }
 }

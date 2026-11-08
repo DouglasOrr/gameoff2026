@@ -40,7 +40,7 @@ renderer.renderer.setAnimationLoop((now: number) => {
     physics.step(state, FIXED_DT);
     acc -= FIXED_DT;
   }
-  renderer.render(state, dt);
+  renderer.render(state, dt, input.cameraPitch);
 
   frames++;
   const elapsed = now - fpsSince;

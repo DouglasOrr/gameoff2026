@@ -21,7 +21,7 @@ export const S = {
   camera: {
     fov: 60,
     distance: bounceTop * 1.4, // initial distance, before the autorange settles
-    height: bounceTop * 0.7, // fixed camera height, so bounces don't shake the horizon
+    height: bounceTop * 0.5, // fixed camera height, so bounces don't shake the horizon
     lookY: bounceTop * 0.32,
     minDistance: bounceTop * 0.9, // closest the autorange pulls in
     maxDistance: bounceTop * 4, // farthest it pulls back (the autorange limit)
@@ -29,6 +29,8 @@ export const S = {
     fitPadding: 0.9, // fraction of the vertical half-FOV the framing may use
     zoomOutTime: 0.1, // seconds to pull back, as the rider climbs
     zoomInTime: 1, // seconds to ease back in, once it drops
+    minElevation: -0.1, // rad the camera may dip below the focus (peek up)
+    maxElevation: 1.1, // rad it may rise above it (peek down)
   },
   shadow: {
     radiusNear: 2.5,
@@ -194,7 +196,7 @@ class ChaseCamera {
     this.camera.updateProjectionMatrix();
   }
 
-  follow(pogo: physics.Pogo, dt: number): void {
+  follow(pogo: physics.Pogo, dt: number, pitch: number): void {
     const { position, orientation } = pogo;
     this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
 
@@ -225,10 +227,20 @@ class ChaseCamera {
       target > this.distance ? S.camera.zoomOutTime : S.camera.zoomInTime;
     this.distance += (target - this.distance) * (1 - Math.exp(-dt / tau));
 
+    // Orbit the focus at the autorange radius. `pitch` > 0 peeks up, which
+    // lowers the camera; at pitch 0 it sits at the configured fixed height.
+    const lift = S.camera.height - S.camera.lookY;
+    const radius = Math.hypot(this.distance, lift);
+    const elevation = THREE.MathUtils.clamp(
+      Math.atan2(lift, this.distance) - pitch,
+      S.camera.minElevation,
+      S.camera.maxElevation,
+    );
+    const horizontal = radius * Math.cos(elevation);
     this.camera.position.set(
-      position.x - this.forward.x * this.distance,
-      S.camera.height,
-      position.z - this.forward.z * this.distance,
+      position.x - this.forward.x * horizontal,
+      S.camera.lookY + radius * Math.sin(elevation),
+      position.z - this.forward.z * horizontal,
     );
     this.camera.lookAt(position.x, S.camera.lookY, position.z);
   }
@@ -697,7 +709,7 @@ export class Renderer {
     this.chase.resize(w / h);
   }
 
-  render(state: physics.State, dt: number): void {
+  render(state: physics.State, dt: number, cameraPitch: number): void {
     this.trees.sync(this.scene, state.trees);
     this.gates.sync(this.scene, state.gates);
     const pogos = state.pogos;
@@ -716,7 +728,7 @@ export class Renderer {
 
     if (pogos.length > 0) {
       const focus = pogos[0]; // pogos[0] is "us"
-      this.chase.follow(focus, dt);
+      this.chase.follow(focus, dt, cameraPitch);
       this.trees.update(this.camera.position, focus.position);
       this.gates.update(focus.nextGate);
     }

@@ -94,6 +94,7 @@ describe("physics bounce", () => {
     const s = physics.makeState();
     pogo(s).position = { x: 5, y: physics.S.groundY - 1, z: 7 };
     pogo(s).orientation = math.rotationAboutX(Math.PI); // stick points up, facing -z
+    pogo(s).nextGate = 3;
     step(s);
     expect(pogo(s).position).toEqual({
       x: 5,
@@ -101,6 +102,7 @@ describe("physics bounce", () => {
       z: 7,
     });
     expect(pogo(s).velocity).toEqual({ x: 0, y: 0, z: 0 });
+    expect(pogo(s).nextGate).toBe(3); // gate progress survives a crash
 
     // Upright, still facing the way it crashed.
     const q = pogo(s).orientation;
