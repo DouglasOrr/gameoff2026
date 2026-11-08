@@ -6,6 +6,7 @@ import * as physics from "../physics";
 export const demo: physics.Level = {
   gates: gateRing(),
   trees: forest(),
+  laps: 2,
 };
 
 // Eight gates evenly spaced around a circle, each facing along the loop.

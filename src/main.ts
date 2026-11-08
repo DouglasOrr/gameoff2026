@@ -5,7 +5,6 @@ import { Input } from "./input";
 import { Renderer } from "./renderer";
 
 const canvas = document.getElementById("canvas-main") as HTMLCanvasElement;
-const fpsEl = document.getElementById("fps") as HTMLDivElement;
 
 const renderer = new Renderer(canvas);
 new ResizeObserver(() => renderer.resize()).observe(canvas);
@@ -25,8 +24,6 @@ const FIXED_DT = 1 / 240;
 const MAX_FRAME = 0.1;
 let acc = 0;
 let last = performance.now();
-let frames = 0;
-let fpsSince = last;
 
 renderer.renderer.setAnimationLoop((now: number) => {
   let dt = (now - last) / 1000;
@@ -42,12 +39,4 @@ renderer.renderer.setAnimationLoop((now: number) => {
     acc -= FIXED_DT;
   }
   renderer.render(state, dt, input.cameraPitch);
-
-  frames++;
-  const elapsed = now - fpsSince;
-  if (elapsed >= 500) {
-    fpsEl.textContent = `${Math.round((frames * 1000) / elapsed)} fps`;
-    frames = 0;
-    fpsSince = now;
-  }
 });

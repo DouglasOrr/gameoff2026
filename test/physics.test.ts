@@ -7,7 +7,14 @@ import { Pilot } from "../src/ai";
 const DT = 1 / 240;
 const NO_INPUT = physics.IDLE;
 
-const makeState = (count = 1) => physics.loadLevel(demo, count);
+// Copy the level, so tests that edit gates or trees can't touch the shared demo.
+const cloneLevel = (level: physics.Level): physics.Level => ({
+  ...level,
+  gates: level.gates.map((g) => ({ ...g })),
+  trees: level.trees.map((t) => ({ ...t })),
+});
+
+const makeState = (count = 1) => physics.loadLevel(cloneLevel(demo), count);
 
 // The state holds several pogos; these tests drive the first.
 const pogo = (s: physics.State) => s.pogos[0];
@@ -98,6 +105,8 @@ describe("physics bounce", () => {
     pogo(s).position = { x: 5, y: physics.S.groundY - 1, z: 7 };
     pogo(s).orientation = math.rotationAboutX(Math.PI); // stick points up, facing -z
     pogo(s).nextGate = 3;
+    pogo(s).lap = demo.laps;
+    pogo(s).time = 12.5;
     step(s);
     expect(pogo(s).position).toEqual({
       x: 5,
@@ -105,7 +114,9 @@ describe("physics bounce", () => {
       z: 7,
     });
     expect(pogo(s).velocity).toEqual({ x: 0, y: 0, z: 0 });
-    expect(pogo(s).nextGate).toBe(3); // gate progress survives a crash
+    expect(pogo(s).nextGate).toBe(3); // race progress survives a crash
+    expect(pogo(s).lap).toBe(demo.laps);
+    expect(pogo(s).time).toBe(12.5);
 
     // Upright, still facing the way it crashed.
     const q = pogo(s).orientation;
@@ -169,8 +180,8 @@ describe("trees", () => {
       minHeight: 40,
       maxHeight: 120,
     };
-    expect(s.trees).toHaveLength(t.count);
-    for (const tree of s.trees) {
+    expect(s.level.trees).toHaveLength(t.count);
+    for (const tree of s.level.trees) {
       expect(tree.position.y).toBe(physics.S.groundY);
       expect(Math.hypot(tree.position.x, tree.position.z)).toBeGreaterThanOrEqual(
         t.clear,
@@ -183,14 +194,14 @@ describe("trees", () => {
   });
 
   it("is reproducible for a fixed seed", () => {
-    expect(makeState().trees).toEqual(makeState().trees);
+    expect(makeState().level.trees).toEqual(makeState().level.trees);
   });
 });
 
 describe("tree collision", () => {
   const fly = (trees: physics.Tree[], y = 40) => {
     const s = makeState();
-    s.trees = trees;
+    s.level = { ...s.level, trees };
     const p = pogo(s);
     p.position = { x: 0, y, z: -5 };
     p.velocity = { x: 0, y: 0, z: -60 };
@@ -223,14 +234,14 @@ describe("tree collision", () => {
 describe("gates", () => {
   it("starts every pogo at the first gate", () => {
     const s = makeState(2);
-    expect(s.gates.length).toBeGreaterThan(1);
+    expect(s.level.gates.length).toBeGreaterThan(1);
     for (const p of s.pogos) expect(p.nextGate).toBe(0);
   });
 
   it("starts the player in front of the first gate, facing through it", () => {
     const s = makeState();
     const p = s.pogos[0];
-    const g = s.gates[0];
+    const g = s.level.gates[0];
     const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
 
     // Behind the gate: the offset from gate to rider opposes the through axis.
@@ -249,17 +260,17 @@ describe("gates", () => {
   it("advances to the next gate when the rider passes through it", () => {
     const s = makeState();
     const p = pogo(s);
-    p.position = { ...s.gates[0].position };
+    p.position = { ...s.level.gates[0].position };
     step(s);
     expect(p.nextGate).toBe(1);
   });
 
   it("wraps to the first gate after the last", () => {
     const s = makeState();
-    s.trees = [];
+    s.level = { ...s.level, trees: [] };
     const p = pogo(s);
-    p.nextGate = s.gates.length - 1;
-    p.position = { ...s.gates[p.nextGate].position };
+    p.nextGate = s.level.gates.length - 1;
+    p.position = { ...s.level.gates[p.nextGate].position };
     step(s);
     expect(p.nextGate).toBe(0);
   });
@@ -267,7 +278,7 @@ describe("gates", () => {
   it("ignores a gate the rider passes beside", () => {
     const s = makeState();
     const p = pogo(s);
-    const g = s.gates[0];
+    const g = s.level.gates[0];
     const across = math.rotate(g.orientation, { x: 1, y: 0, z: 0 });
     p.position = {
       x: g.position.x + across.x * g.width,
@@ -281,7 +292,7 @@ describe("gates", () => {
   it("passes a rotated gate along its own axis", () => {
     const s = makeState();
     const p = pogo(s);
-    const g = s.gates[0];
+    const g = s.level.gates[0];
     g.orientation = math.rotationAboutY(0.7);
     const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
     p.position = {
@@ -295,9 +306,9 @@ describe("gates", () => {
 
   it("does not let a fast rider skip its next gate", () => {
     const s = makeState();
-    s.trees = [];
+    s.level = { ...s.level, trees: [] };
     const p = pogo(s);
-    const g = s.gates[0];
+    const g = s.level.gates[0];
     const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
     // Start short of the gate and cross it in a single step.
     p.position = {
@@ -336,5 +347,36 @@ describe("ai pilot", () => {
     }
     const moved = Math.hypot(p.position.x - start.x, p.position.z - start.z);
     expect(moved).toBeGreaterThan(30);
+  });
+});
+
+describe("race", () => {
+  it("runs the timer before the race is done", () => {
+    const s = makeState();
+    for (let i = 0; i < 10; i++) step(s);
+    expect(pogo(s).time).toBeCloseTo(10 * DT, 9);
+  });
+
+  it("counts a lap when the rider loops back through the first gate", () => {
+    const s = makeState();
+    const p = pogo(s);
+    p.nextGate = s.level.gates.length - 1;
+    p.position = { ...s.level.gates[p.nextGate].position };
+    step(s);
+    expect(p.lap).toBe(1);
+  });
+
+  it("pauses the timer once every lap is done", () => {
+    const s = makeState();
+    const p = pogo(s);
+    for (let i = 0; i < demo.laps; i++) {
+      p.nextGate = s.level.gates.length - 1;
+      p.position = { ...s.level.gates[p.nextGate].position };
+      step(s);
+    }
+    expect(p.lap).toBe(demo.laps);
+    const frozen = p.time;
+    for (let i = 0; i < 10; i++) step(s);
+    expect(p.time).toBe(frozen);
   });
 });

@@ -19,6 +19,13 @@ export const S = {
   footRadius: 1, // pogo collision radius at the stick's foot
 };
 
+export type Inputs = {
+  yaw: number; // rad/s about world Y
+  pitch: number; // rad/s about local X
+  roll: number; // rad/s about local Z
+  mega: boolean;
+};
+
 export type Pogo = {
   position: math.Vec3;
   orientation: math.Quat; // rider -> foot is local -Y
@@ -27,12 +34,8 @@ export type Pogo = {
   peakStrain: number;
   input: Inputs;
   nextGate: number;
-};
-
-export type State = {
-  pogos: Pogo[];
-  trees: Tree[];
-  gates: Gate[];
+  lap: number;
+  time: number;
 };
 
 export type Tree = {
@@ -53,21 +56,20 @@ export type Gate = {
 export type Level = {
   gates: Gate[];
   trees: Tree[];
+  laps: number;
 };
 
-export type Inputs = {
-  yaw: number; // rad/s about world Y
-  pitch: number; // rad/s about local X
-  roll: number; // rad/s about local Z
-  mega: boolean; // hold to add the mega-bounce impulse during extension
+export type State = {
+  level: Level;
+  pogos: Pogo[];
 };
 
 export const IDLE: Inputs = { yaw: 0, pitch: 0, roll: 0, mega: false };
 
 export function makePogo(
-  x = 0,
-  z = 0,
-  orientation: math.Quat = math.identityQuat(),
+  x: number,
+  z: number,
+  orientation: math.Quat,
 ): Pogo {
   return {
     position: { x, y: S.stickLength + S.spawnDrop, z },
@@ -77,6 +79,8 @@ export function makePogo(
     peakStrain: 0,
     input: { ...IDLE },
     nextGate: 0,
+    lap: 0,
+    time: 0,
   };
 }
 
@@ -100,7 +104,7 @@ export function loadLevel(level: Level, count: number): State {
       ),
     );
   }
-  return { pogos, trees: level.trees, gates: level.gates };
+  return { pogos, level };
 }
 
 // Axial compression that puts the stick tip on the ground (0 when airborne).
@@ -202,15 +206,12 @@ function hitsGate(prev: math.Vec3, p: math.Vec3, gate: Gate): boolean {
 }
 
 export function step(state: State, dt: number): void {
-  for (const pogo of state.pogos) stepPogo(pogo, state.trees, state.gates, dt);
+  for (const pogo of state.pogos) stepPogo(pogo, state.level, dt);
 }
 
-function stepPogo(
-  pogo: Pogo,
-  trees: readonly Tree[],
-  gates: readonly Gate[],
-  dt: number,
-): void {
+function stepPogo(pogo: Pogo, level: Level, dt: number): void {
+  const { trees, gates, laps } = level;
+  if (pogo.lap < laps) pogo.time += dt;
   const input = pogo.input;
   const { position: p, velocity: v } = pogo;
   const prev = { x: p.x, y: p.y, z: p.z }; // before this step moves p
@@ -297,18 +298,21 @@ function stepPogo(
     v.z -= axis.z * dv;
   }
 
-  // Advance once the rider has passed through the next gate.
+  // Advance once the rider has passed through the next gate; passing the last
+  // one completes a lap.
   if (hitsGate(prev, p, gates[pogo.nextGate])) {
+    if (pogo.nextGate === gates.length - 1)
+      pogo.lap = Math.min(pogo.lap + 1, laps);
     pogo.nextGate = (pogo.nextGate + 1) % gates.length;
   }
 
   // Crash: the pogo fell over and the rider reached the ground. Reset in place,
-  // keeping the heading and the gate progress.
+  // keeping the heading and the race progress.
   if (p.y <= S.groundY) {
     const facing = math.rotate(pogo.orientation, { x: 0, y: 0, z: 1 });
     const upright = math.rotationAboutY(Math.atan2(facing.x, facing.z));
-    const nextGate = pogo.nextGate;
+    const { nextGate, lap, time } = pogo;
     Object.assign(pogo, makePogo(p.x, p.z, upright));
-    pogo.nextGate = nextGate;
+    Object.assign(pogo, { nextGate, lap, time });
   }
 }

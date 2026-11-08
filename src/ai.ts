@@ -6,7 +6,6 @@ import * as math from "./math";
 import * as physics from "./physics";
 
 export const S = {
-  seed: 1,
   targetFactor: 2.5, // target circle radius, in stick lengths
   maxSpeed: 50, // capped speed the pilot aims for
   speedGain: 1, // desired speed per unit of distance remaining
@@ -56,7 +55,7 @@ export class Pilot {
   private readonly drive: Pid;
   private rising = false;
 
-  constructor(pogo: physics.Pogo, seed = S.seed) {
+  constructor(pogo: physics.Pogo, seed: number) {
     this.pogo = pogo;
     this.rand = math.rng(seed);
     this.drive = new Pid(S.drive.kp, S.drive.ki, S.drive.kd, S.drive.limit);

@@ -649,15 +649,55 @@ class GateField {
     if (!this.group.parent) scene.add(this.group);
   }
 
-  update(playerNext: number): void {
-    for (let i = 0; i < this.mats.length; i++) {
+  update(next: number, lap: number, laps: number): void {
+    const n = this.mats.length;
+    const done = lap >= laps;
+    // On the final lap the last gate is the finish; nothing follows it.
+    const finish = lap === laps - 1 && next === n - 1;
+    const soon = done || finish ? -1 : (next + 1) % n;
+    for (let i = 0; i < n; i++) {
       const color =
-        i === playerNext
-          ? S.gate.colors.next
-          : i === (playerNext + 1) % this.mats.length
-            ? S.gate.colors.soon
-            : S.gate.colors.other;
+        done
+          ? S.gate.colors.other
+          : i === next
+            ? S.gate.colors.next
+            : i === soon
+              ? S.gate.colors.soon
+              : S.gate.colors.other;
       this.mats[i].color.setHex(color);
+    }
+  }
+}
+
+function formatTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds - minutes * 60;
+  return `${minutes}:${rest.toFixed(2).padStart(5, "0")}`;
+}
+
+// The DOM overlays drawn over the canvas: the race readout and the fps counter.
+class Hud {
+  private readonly lap = document.getElementById("hud-lap")!;
+  private readonly time = document.getElementById("hud-time")!;
+  private readonly fps = document.getElementById("fps")!;
+
+  private frames = 0;
+  private since = performance.now();
+
+  update(state: physics.State): void {
+    const player = state.pogos[0];
+    const laps = state.level.laps;
+    this.lap.textContent = `Lap ${Math.min(player.lap + 1, laps)}/${laps}`;
+    this.time.textContent = formatTime(player.time);
+
+    // Measured locally rather than from the render dt, which is clamped.
+    this.frames++;
+    const now = performance.now();
+    const elapsed = now - this.since;
+    if (elapsed >= 500) {
+      this.fps.textContent = `${Math.round((this.frames * 1000) / elapsed)} fps`;
+      this.frames = 0;
+      this.since = now;
     }
   }
 }
@@ -670,6 +710,7 @@ export class Renderer {
   private readonly chase = new ChaseCamera();
   private readonly trees = new TreeField();
   private readonly gates = new GateField();
+  private readonly hud = new Hud();
   private readonly views: PogoView[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
@@ -710,8 +751,8 @@ export class Renderer {
   }
 
   render(state: physics.State, dt: number, cameraPitch: number): void {
-    this.trees.sync(this.scene, state.trees);
-    this.gates.sync(this.scene, state.gates);
+    this.trees.sync(this.scene, state.level.trees);
+    this.gates.sync(this.scene, state.level.gates);
     const pogos = state.pogos;
     while (this.views.length < pogos.length) {
       const view = new PogoView(
@@ -730,8 +771,9 @@ export class Renderer {
       const focus = pogos[0]; // pogos[0] is "us"
       this.chase.follow(focus, dt, cameraPitch);
       this.trees.update(this.camera.position, focus.position);
-      this.gates.update(focus.nextGate);
+      this.gates.update(focus.nextGate, focus.lap, state.level.laps);
     }
+    this.hud.update(state);
     this.renderer.render(this.scene, this.camera);
   }
 }
