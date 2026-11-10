@@ -26,12 +26,40 @@ const ground: terrain.Terrain = {
   ],
 };
 
+const ramps = rampList(ground);
+
 export const demo: physics.Level = {
   gates: gateRing(ground),
-  trees: forest(ground),
+  trees: forest(ground, ramps),
+  ramps,
   terrain: ground,
   laps: 2,
 };
+
+// Ramps set on the racing line between gates: a plain kicker and a couple with
+// a flat top to launch from.
+function rampList(t: terrain.Terrain): physics.Ramp[] {
+  const radius = 600; // ramps sit on the same circle as the gates
+  const ramp = (
+    step: number,
+    dims: Omit<physics.Ramp, "position" | "orientation">,
+  ): physics.Ramp => {
+    const theta = (step / 8) * Math.PI * 2;
+    const x = radius * Math.sin(theta);
+    const z = radius * Math.cos(theta);
+    return {
+      position: { x, y: terrain.height(t, x, z), z },
+      orientation: math.rotationAboutY(theta + Math.PI / 2), // along the loop
+      ...dims,
+    };
+  };
+  return [
+    ramp(0.5, { length: 130, flat: 0, width: 100, height: 50 }),
+    ramp(2.5, { length: 100, flat: 60, width: 110, height: 45 }),
+    ramp(4.5, { length: 110, flat: 30, width: 90, height: 55 }),
+    ramp(6.5, { length: 120, flat: 0, width: 100, height: 60 }),
+  ];
+}
 
 // Eight gates evenly spaced around a circle, each facing along the loop.
 function gateRing(t: terrain.Terrain): physics.Gate[] {
@@ -57,8 +85,8 @@ function gateRing(t: terrain.Terrain): physics.Gate[] {
   return gates;
 }
 
-// A fixed scatter of cones, clear of the spawn area.
-function forest(t: terrain.Terrain): physics.Tree[] {
+// A fixed scatter of cones, clear of the spawn area and the ramps.
+function forest(t: terrain.Terrain, ramps: physics.Ramp[]): physics.Tree[] {
   const count = 90;
   const spread = 900; // scattered within +/- this of the origin
   const clear = 70; // keep this radius around the origin clear
@@ -66,6 +94,14 @@ function forest(t: terrain.Terrain): physics.Tree[] {
   const maxRadius = 16;
   const minHeight = 40;
   const maxHeight = 120;
+
+  const blocked = (x: number, z: number): boolean => {
+    if (Math.hypot(x, z) < clear) return true;
+    return ramps.some((r) => {
+      const reach = Math.hypot(r.width / 2, (r.length + r.flat) / 2) + 20;
+      return Math.hypot(x - r.position.x, z - r.position.z) < reach;
+    });
+  };
 
   const rand = math.rng(1); // fixed seed, so the scatter is reproducible
   const trees: physics.Tree[] = [];
@@ -75,7 +111,7 @@ function forest(t: terrain.Terrain): physics.Tree[] {
     do {
       x = (rand() * 2 - 1) * spread;
       z = (rand() * 2 - 1) * spread;
-    } while (Math.hypot(x, z) < clear);
+    } while (blocked(x, z));
     trees.push({
       position: { x, y: terrain.height(t, x, z), z },
       radius: minRadius + (maxRadius - minRadius) * rand(),

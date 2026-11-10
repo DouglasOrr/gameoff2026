@@ -74,6 +74,9 @@ export const S = {
     segments: 8, // cone is low-poly, to match the toon look
     ghostOpacity: 0.25, // trees between the camera and the rider
   },
+  ramp: {
+    color: 0x9c6f43,
+  },
 };
 
 type Skin = { body: THREE.Color; shadow: THREE.Color };
@@ -394,7 +397,7 @@ class PogoView {
     this.solidMat.dispose();
   }
 
-  update(pogo: physics.Pogo, ground: terrain.Terrain): void {
+  update(pogo: physics.Pogo, level: physics.Level): void {
     const { position, strain } = pogo;
     this.quat.set(
       pogo.orientation.x,
@@ -420,7 +423,7 @@ class PogoView {
       .add(this.rider.position);
 
     const sh = S.shadow;
-    const bodyGround = terrain.height(ground, position.x, position.z);
+    const bodyGround = physics.groundHeight(level, position.x, position.z);
     // t = 0 once the rider is stick-length above the ground (stick could hit).
     const t = THREE.MathUtils.clamp(
       (position.y - bodyGround - physics.S.stickLength) / sh.range,
@@ -439,7 +442,7 @@ class PogoView {
       this.boxPos,
       this.center,
       this.half,
-      ground,
+      level,
     );
 
     const w = S.stick.width / 2;
@@ -449,7 +452,7 @@ class PogoView {
       this.stickPos,
       this.mid,
       this.half,
-      ground,
+      level,
     );
     this.solidMat.opacity = THREE.MathUtils.lerp(
       sh.solidNearOpacity,
@@ -464,7 +467,7 @@ class PogoView {
       this.foot.x,
       this.foot.z,
       THREE.MathUtils.lerp(sh.radiusNear, sh.radiusFar, t),
-      ground,
+      level,
       sh.lift,
     );
     if (strain > 0) this.patchMat.color.copy(this.skin.body);
@@ -478,13 +481,13 @@ class PogoView {
 
   // Writes the ground silhouette of the box (the convex hull of its eight
   // projected corners) into `pos` as `shadowCorners` (x, y, z) triples, each
-  // dropped onto the terrain so it conforms to bumps and bowls.
+  // dropped onto the ground so it conforms to bumps, bowls and ramp tops.
   private updateSilhouette(
     mesh: THREE.Mesh,
     pos: Float32Array,
     center: THREE.Vector3,
     half: THREE.Vector3,
-    ground: terrain.Terrain,
+    level: physics.Level,
   ): void {
     const pts = this.hullPts;
     let n = 0;
@@ -505,7 +508,7 @@ class PogoView {
     for (let v = 0; v < shadowCorners; v++) {
       const q = hull[Math.min(v, m - 1)];
       pos[v * 3] = q.x;
-      pos[v * 3 + 1] = terrain.height(ground, q.x, q.z) + S.shadow.lift;
+      pos[v * 3 + 1] = physics.groundHeight(level, q.x, q.z) + S.shadow.lift;
       pos[v * 3 + 2] = q.z;
     }
     (
@@ -520,12 +523,12 @@ class PogoView {
     cx: number,
     cz: number,
     radius: number,
-    ground: terrain.Terrain,
+    level: physics.Level,
     lift: number,
   ): void {
     const segments = pos.length / 3 - 1;
     pos[0] = cx;
-    pos[1] = terrain.height(ground, cx, cz) + lift;
+    pos[1] = physics.groundHeight(level, cx, cz) + lift;
     pos[2] = cz;
     for (let i = 0; i < segments; i++) {
       const a = (i / segments) * Math.PI * 2;
@@ -533,7 +536,7 @@ class PogoView {
       const z = cz + Math.sin(a) * radius;
       const o = (i + 1) * 3;
       pos[o] = x;
-      pos[o + 1] = terrain.height(ground, x, z) + lift;
+      pos[o + 1] = physics.groundHeight(level, x, z) + lift;
       pos[o + 2] = z;
     }
     (
@@ -646,6 +649,67 @@ function occludes(
   return (
     Math.hypot(tree.position.x - cx, tree.position.z - cz) <= tree.radius
   );
+}
+
+// A ramp's solid: a trapezoid cross-section (the rise, the optional flat top,
+// and the two vertical edges) extruded across the ramp's width. Built in local
+// Z-Y, then turned so local +Z runs up the ramp and local X spans it.
+function rampGeometry(ramp: physics.Ramp): THREE.BufferGeometry {
+  const half = (ramp.length + ramp.flat) / 2;
+  const shape = new THREE.Shape();
+  shape.moveTo(-half, 0);
+  shape.lineTo(half - ramp.flat, ramp.height);
+  shape.lineTo(half, ramp.height);
+  shape.lineTo(half, 0);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: ramp.width,
+    bevelEnabled: false,
+  });
+  geo.translate(0, 0, -ramp.width / 2); // extrudes forward; centre the width
+  geo.rotateY(-Math.PI / 2); // shape X runs up-slope, extrusion spans the width
+  return geo;
+}
+
+// Static ramps. They share one material, so only the geometry varies.
+class RampField {
+  private readonly material: THREE.MeshStandardMaterial;
+  private readonly group = new THREE.Group();
+  private readonly geoms: THREE.BufferGeometry[] = [];
+  private ramps: readonly physics.Ramp[] | null = null;
+
+  constructor() {
+    this.material = new THREE.MeshStandardMaterial({
+      color: S.ramp.color,
+      roughness: 0.9,
+      flatShading: true,
+    });
+  }
+
+  sync(scene: THREE.Scene, ramps: readonly physics.Ramp[]): void {
+    if (this.ramps === ramps) return;
+    for (const geo of this.geoms) geo.dispose();
+    this.geoms.length = 0;
+    this.group.clear();
+
+    for (const ramp of ramps) {
+      const geo = rampGeometry(ramp);
+      const mesh = new THREE.Mesh(geo, this.material);
+      mesh.position.set(ramp.position.x, ramp.position.y, ramp.position.z);
+      mesh.quaternion.set(
+        ramp.orientation.x,
+        ramp.orientation.y,
+        ramp.orientation.z,
+        ramp.orientation.w,
+      );
+      this.geoms.push(geo);
+      this.group.add(mesh);
+    }
+
+    this.ramps = ramps;
+    if (!this.group.parent) scene.add(this.group);
+  }
 }
 
 // The ground: a plane displaced by the terrain height field, so bumps and bowls
@@ -824,6 +888,7 @@ export class Renderer {
   private readonly chase = new ChaseCamera();
   private readonly trees = new TreeField();
   private readonly gates = new GateField();
+  private readonly ramps = new RampField();
   private readonly terrainField: TerrainField;
   private readonly hud = new Hud();
   private readonly views: PogoView[] = [];
@@ -861,6 +926,7 @@ export class Renderer {
   render(state: physics.State, dt: number, cameraPitch: number): void {
     this.trees.sync(this.scene, state.level.trees);
     this.gates.sync(this.scene, state.level.gates);
+    this.ramps.sync(this.scene, state.level.ramps);
     this.terrainField.sync(this.scene, state.level.terrain);
     const pogos = state.pogos;
     while (this.views.length < pogos.length) {
@@ -875,7 +941,7 @@ export class Renderer {
     }
 
     for (let i = 0; i < pogos.length; i++)
-      this.views[i].update(pogos[i], state.level.terrain);
+      this.views[i].update(pogos[i], state.level);
 
     if (pogos.length > 0) {
       const focus = pogos[0]; // pogos[0] is "us"

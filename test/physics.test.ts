@@ -8,11 +8,13 @@ import { Pilot } from "../src/ai";
 const DT = 1 / 240;
 const NO_INPUT = physics.IDLE;
 
-// Copy the level, so tests that edit gates or trees can't touch the shared demo.
+// Copy the level, so tests that edit gates, trees or ramps can't touch the
+// shared demo.
 const cloneLevel = (level: physics.Level): physics.Level => ({
   ...level,
   gates: level.gates.map((g) => ({ ...g })),
   trees: level.trees.map((t) => ({ ...t })),
+  ramps: level.ramps.map((r) => ({ ...r })),
 });
 
 const makeState = (count = 1) => physics.loadLevel(cloneLevel(demo), count);
@@ -259,6 +261,130 @@ describe("tree collision", () => {
     const miss = fly([], 200);
     expect(high.velocity.z).toBeLessThan(0); // carried on past
     expect(high.velocity.z).toBeCloseTo(miss.velocity.z, 5);
+  });
+});
+
+describe("ramps", () => {
+  const flat: terrain.Terrain = { base: 0, features: [] };
+
+  // A plain kicker at the origin, rising to the lip along +z.
+  const kicker: physics.Ramp = {
+    position: { x: 0, y: 0, z: 0 },
+    orientation: math.identityQuat(),
+    length: 100,
+    flat: 0,
+    width: 100,
+    height: 50,
+  };
+
+  it("places ramps on the ground, clear of the trees", () => {
+    const s = makeState();
+    expect(s.level.ramps.length).toBeGreaterThan(0);
+    for (const ramp of s.level.ramps) {
+      expect(ramp.position.y).toBeCloseTo(
+        terrain.height(s.level.terrain, ramp.position.x, ramp.position.z),
+        9,
+      );
+      for (const tree of s.level.trees) {
+        const d = Math.hypot(
+          tree.position.x - ramp.position.x,
+          tree.position.z - ramp.position.z,
+        );
+        expect(d).toBeGreaterThanOrEqual(
+          Math.hypot(ramp.width / 2, (ramp.length + ramp.flat) / 2),
+        );
+      }
+    }
+  });
+
+  it("reports the ramp top as ground height", () => {
+    const level: physics.Level = { ...demo, terrain: flat, ramps: [kicker] };
+    expect(physics.groundHeight(level, 0, 0)).toBeCloseTo(25, 9); // mid-slope
+    expect(physics.groundHeight(level, 0, 49)).toBeCloseTo(49.5, 9); // near the lip
+    expect(physics.groundHeight(level, 0, -60)).toBeCloseTo(0, 9); // behind it
+    expect(physics.groundHeight(level, 60, 0)).toBeCloseTo(0, 9); // beside it
+  });
+
+  it("rests the stick on a ramp's slope", () => {
+    const s = makeState();
+    s.level = { ...s.level, terrain: flat, trees: [], ramps: [kicker] };
+    const p = pogo(s);
+    p.position = { x: 0, y: 25 + physics.S.stickLength - 2, z: 0 };
+    p.orientation = math.identityQuat();
+    step(s);
+    expect(p.strain).toBeGreaterThan(0);
+    const axis = math.rotate(p.orientation, { x: 0, y: -1, z: 0 });
+    const len = physics.S.stickLength - p.strain;
+    const footY = p.position.y + axis.y * len;
+    const footZ = p.position.z + axis.z * len;
+    expect(footY).toBeCloseTo((kicker.height * (footZ + 50)) / 100, 6);
+  });
+
+  const flyRamp = (ramps: physics.Ramp[], y = 40) => {
+    const s = makeState();
+    s.level = { ...s.level, terrain: flat, trees: [], ramps };
+    const p = pogo(s);
+    p.position = { x: 0, y, z: 55 };
+    p.velocity = { x: 0, y: 0, z: -40 };
+    p.orientation = math.identityQuat();
+    for (let i = 0; i < 60; i++) step(s);
+    return p;
+  };
+
+  it("rests the stick on a ramp's flat top", () => {
+    const tabled: physics.Ramp = { ...kicker, flat: 60 };
+    const s = makeState();
+    s.level = { ...s.level, terrain: flat, trees: [], ramps: [tabled] };
+    const p = pogo(s);
+    p.position = { x: 0, y: 50 + physics.S.stickLength - 2, z: 50 };
+    p.orientation = math.identityQuat();
+    step(s);
+    expect(p.strain).toBeGreaterThan(0);
+    const axis = math.rotate(p.orientation, { x: 0, y: -1, z: 0 });
+    const len = physics.S.stickLength - p.strain;
+    expect(p.position.y + axis.y * len).toBeCloseTo(50, 6);
+  });
+
+  it("holds a rider that lands hard on a ramp", () => {
+    const s = makeState();
+    s.level = { ...s.level, terrain: flat, trees: [], ramps: [kicker] };
+    const p = pogo(s);
+    p.position = { x: 0, y: 60, z: -40 };
+    p.velocity = { x: 0, y: -100, z: 0 };
+    p.orientation = math.identityQuat();
+    let minZ = Infinity;
+    for (let i = 0; i < 240; i++) {
+      step(s);
+      minZ = Math.min(minZ, p.position.z);
+    }
+    const half = (kicker.length + kicker.flat) / 2;
+    expect(minZ).toBeGreaterThan(-half); // not ejected out the back
+  });
+
+  it("bounces a rider off a ramp's lip", () => {
+    const hit = flyRamp([kicker]);
+    const miss = flyRamp([]);
+    expect(hit.velocity.z).toBeGreaterThan(0); // bounced back
+    expect(hit.position.z).toBeGreaterThan(50);
+    expect(miss.position.z).toBeLessThan(50);
+  });
+
+  it("launches a rider up a ramp", () => {
+    const run = (ramps: physics.Ramp[]) => {
+      const s = makeState();
+      s.level = { ...s.level, terrain: flat, trees: [], ramps };
+      const p = pogo(s);
+      p.position = { x: 0, y: physics.S.stickLength + 2, z: -100 };
+      p.velocity = { x: 0, y: 0, z: 90 };
+      p.orientation = math.identityQuat();
+      let top = 0;
+      for (let i = 0; i < 480; i++) {
+        step(s);
+        top = Math.max(top, p.position.y);
+      }
+      return top;
+    };
+    expect(run([kicker])).toBeGreaterThan(run([]) + 10);
   });
 });
 
