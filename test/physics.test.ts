@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as physics from "../src/physics";
 import * as math from "../src/math";
+import * as terrain from "../src/terrain";
 import { demo } from "../src/levels/demo";
 import { Pilot } from "../src/ai";
 
@@ -70,7 +71,7 @@ describe("physics bounce", () => {
       physics.S.maxStrainRatio * physics.S.stickLength,
     );
     // No tunnelling through the ground.
-    expect(minY).toBeGreaterThan(physics.S.groundY);
+    expect(minY).toBeGreaterThan(0);
     // The active spring balances drag, so it settles near the drop height.
     expect(maxAfterBounce).toBeGreaterThan(startY - 2);
   });
@@ -84,10 +85,7 @@ describe("physics bounce", () => {
         found = true;
         const axis = math.rotate(pogo(s).orientation, { x: 0, y: -1, z: 0 });
         const length = physics.S.stickLength - pogo(s).strain;
-        expect(pogo(s).position.y + length * axis.y).toBeCloseTo(
-          physics.S.groundY,
-          6,
-        );
+        expect(pogo(s).position.y + length * axis.y).toBeCloseTo(0, 6);
       }
     }
     expect(found).toBe(true);
@@ -102,7 +100,7 @@ describe("physics bounce", () => {
 
   it("resets the pogo upright when it falls through the ground", () => {
     const s = makeState();
-    pogo(s).position = { x: 5, y: physics.S.groundY - 1, z: 7 };
+    pogo(s).position = { x: 5, y: -1, z: 7 };
     pogo(s).orientation = math.rotationAboutX(Math.PI); // stick points up, facing -z
     pogo(s).nextGate = 3;
     pogo(s).lap = demo.laps;
@@ -124,6 +122,36 @@ describe("physics bounce", () => {
     expect(axis.y).toBeCloseTo(-1, 12);
     const facing = math.rotate(q, { x: 0, y: 0, z: 1 });
     expect(facing.z).toBeCloseTo(-1, 12);
+  });
+
+  it("does not reset a rider that dips below a bump while still upright", () => {
+    const s = makeState();
+    s.level = { ...s.level, trees: [] };
+    const p = pogo(s);
+    // Body below the top of the demo bump at (600, 0), but the stick is
+    // still standing on its foot, so this is not a fall.
+    p.position = { x: 600, y: 30, z: 0 };
+    p.orientation = math.identityQuat();
+    step(s);
+    const spawn =
+      terrain.height(s.level.terrain, 600, 0) +
+      physics.S.stickLength +
+      physics.S.spawnDrop;
+    expect(pogo(s).position.y).toBeLessThan(spawn); // recovering, not reset
+  });
+
+  it("resets once the pogo has toppled into the ground", () => {
+    const s = makeState();
+    s.level = { ...s.level, trees: [] };
+    const p = pogo(s);
+    p.position = { x: 600, y: 30, z: 0 };
+    p.orientation = math.rotationAboutX(Math.PI / 2); // stick horizontal
+    step(s);
+    const spawn =
+      terrain.height(s.level.terrain, 600, 0) +
+      physics.S.stickLength +
+      physics.S.spawnDrop;
+    expect(pogo(s).position.y).toBe(spawn);
   });
 
   it("keeps the stick orientation a unit quaternion", () => {
@@ -182,7 +210,10 @@ describe("trees", () => {
     };
     expect(s.level.trees).toHaveLength(t.count);
     for (const tree of s.level.trees) {
-      expect(tree.position.y).toBe(physics.S.groundY);
+      expect(tree.position.y).toBeCloseTo(
+        terrain.height(s.level.terrain, tree.position.x, tree.position.z),
+        9,
+      );
       expect(Math.hypot(tree.position.x, tree.position.z)).toBeGreaterThanOrEqual(
         t.clear,
       );

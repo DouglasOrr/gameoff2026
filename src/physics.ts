@@ -1,9 +1,9 @@
 // Core game objects and physics.
 
 import * as math from "./math";
+import * as terrain from "./terrain";
 
 export const S = {
-  groundY: 0,
   stickLength: 20,
   gravity: 240,
   springStiffness: 600,
@@ -17,6 +17,7 @@ export const S = {
   treeBounce: 0.5, // restitution when rebounding off a tree
   riderRadius: 2.5, // pogo collision radius at the rider
   footRadius: 1, // pogo collision radius at the stick's foot
+  toppleAxisY: -0.5, // stick Y (rider -> foot) above which the pogo counts as fallen
 };
 
 export type Inputs = {
@@ -56,6 +57,7 @@ export type Gate = {
 export type Level = {
   gates: Gate[];
   trees: Tree[];
+  terrain: terrain.Terrain;
   laps: number;
 };
 
@@ -69,10 +71,11 @@ export const IDLE: Inputs = { yaw: 0, pitch: 0, roll: 0, mega: false };
 export function makePogo(
   x: number,
   z: number,
+  groundY: number,
   orientation: math.Quat,
 ): Pogo {
   return {
-    position: { x, y: S.stickLength + S.spawnDrop, z },
+    position: { x, y: groundY + S.stickLength + S.spawnDrop, z },
     orientation,
     velocity: { x: 0, y: 0, z: 0 },
     strain: 0,
@@ -96,25 +99,43 @@ export function loadLevel(level: Level, count: number): State {
   for (let i = 0; i < count; i++) {
     // Side by side across the track, all facing through the first gate.
     const lane = (i - (count - 1) / 2) * S.stickLength * 3;
+    const x = start.position.x - through.x * back + across.x * lane;
+    const z = start.position.z - through.z * back + across.z * lane;
     pogos.push(
-      makePogo(
-        start.position.x - through.x * back + across.x * lane,
-        start.position.z - through.z * back + across.z * lane,
-        start.orientation,
-      ),
+      makePogo(x, z, terrain.height(level.terrain, x, z), start.orientation),
     );
   }
   return { pogos, level };
 }
 
-// Axial compression that puts the stick tip on the ground (0 when airborne).
-function contactStrain(p: math.Vec3, axis: math.Vec3): number {
-  const tipY = p.y + S.stickLength * axis.y;
-  if (tipY > S.groundY || axis.y >= -1e-6) return 0;
-  return Math.min(
-    (S.groundY - tipY) / -axis.y,
-    S.maxStrainRatio * S.stickLength,
+// Axial compression that puts the stick tip on the terrain (0 when airborne).
+// Solve p.y + u*axis.y = height(foot) for the stick length u, then strain = L-u.
+function contactStrain(
+  t: terrain.Terrain,
+  p: math.Vec3,
+  axis: math.Vec3,
+): number {
+  if (axis.y >= -1e-6) return 0;
+  const L = S.stickLength;
+  const lo = L - S.maxStrainRatio * L;
+  const gap = (u: number) =>
+    p.y + u * axis.y - terrain.height(t, p.x + u * axis.x, p.z + u * axis.z);
+
+  // Start from the flat-ground estimate (exact when the ground is flat), then
+  // refine with Newton, since a bump under the foot bends the line.
+  let u = Math.min(
+    Math.max((terrain.height(t, p.x, p.z) - p.y) / axis.y, lo),
+    L,
   );
+  for (let i = 0; i < 8; i++) {
+    const g = gap(u);
+    if (Math.abs(g) < 1e-6) break;
+    const e = 1e-3;
+    const dg = (gap(u + e) - gap(u - e)) / (2 * e);
+    if (Math.abs(dg) < 1e-9) break;
+    u = Math.min(Math.max(u - g / dg, lo), L);
+  }
+  return L - u;
 }
 
 // Rebound the pogo off a tree. A tree is a cone (base radius, height); each
@@ -225,7 +246,7 @@ function stepPogo(pogo: Pogo, level: Level, dt: number): void {
   pogo.orientation = math.normalizeQuat(q);
   const axis = math.rotate(pogo.orientation, down);
 
-  const strain = contactStrain(p, axis);
+  const strain = contactStrain(level.terrain, p, axis);
 
   let ax = 0;
   let ay = -S.gravity;
@@ -272,7 +293,7 @@ function stepPogo(pogo: Pogo, level: Level, dt: number): void {
   for (const tree of trees) {
     bounceOffTree(p, v, tree, p.x, p.y, p.z, S.riderRadius);
   }
-  const footLen = S.stickLength - contactStrain(p, axis);
+  const footLen = S.stickLength - contactStrain(level.terrain, p, axis);
   for (const tree of trees) {
     bounceOffTree(
       p,
@@ -286,7 +307,7 @@ function stepPogo(pogo: Pogo, level: Level, dt: number): void {
   }
 
   // Recompute strain from the new pose so the rendered foot sits on the floor.
-  pogo.strain = contactStrain(p, axis);
+  pogo.strain = contactStrain(level.terrain, p, axis);
 
   // Fixed speed boost per-bounce: bounceBoost (always) +megaBoost (control)
   const released = strain - pogo.strain;
@@ -306,13 +327,21 @@ function stepPogo(pogo: Pogo, level: Level, dt: number): void {
     pogo.nextGate = (pogo.nextGate + 1) % gates.length;
   }
 
-  // Crash: the pogo fell over and the rider reached the ground. Reset in place,
-  // keeping the heading and the race progress.
-  if (p.y <= S.groundY) {
+  // Crash: the pogo toppled and the rider reached the ground. Reset in place,
+  // keeping the heading and the race progress. The topple test matters on
+  // slopes: a leaning rider's body can drop below the ground under it while the
+  // stick is still standing on its foot, which is not a fall.
+  if (
+    axis.y > S.toppleAxisY &&
+    p.y <= terrain.height(level.terrain, p.x, p.z)
+  ) {
     const facing = math.rotate(pogo.orientation, { x: 0, y: 0, z: 1 });
     const upright = math.rotationAboutY(Math.atan2(facing.x, facing.z));
     const { nextGate, lap, time } = pogo;
-    Object.assign(pogo, makePogo(p.x, p.z, upright));
+    Object.assign(
+      pogo,
+      makePogo(p.x, p.z, terrain.height(level.terrain, p.x, p.z), upright),
+    );
     Object.assign(pogo, { nextGate, lap, time });
   }
 }

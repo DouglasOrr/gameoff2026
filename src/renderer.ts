@@ -2,6 +2,7 @@
 
 import * as THREE from "three";
 import * as physics from "./physics";
+import * as terrain from "./terrain";
 
 // Top of the spawn bounce; the camera frames this whole vertical range.
 const bounceTop = physics.S.stickLength + physics.S.spawnDrop;
@@ -11,6 +12,7 @@ export const S = {
   ground: {
     size: 2000,
     cell: 20, // world units per grid cell
+    segments: 320, // grid resolution the terrain is displaced on
     color: 0x55606b,
     lineColor: 0x707d8a,
   },
@@ -21,8 +23,8 @@ export const S = {
   camera: {
     fov: 60,
     distance: bounceTop * 1.4, // initial distance, before the autorange settles
-    height: bounceTop * 0.5, // fixed camera height, so bounces don't shake the horizon
-    lookY: bounceTop * 0.32,
+    height: bounceTop * 0.5, // camera height above the ground under the rider
+    lookY: bounceTop * 0.32, // look point height above that same ground
     minDistance: bounceTop * 0.9, // closest the autorange pulls in
     maxDistance: bounceTop * 4, // farthest it pulls back (the autorange limit)
     peakWindow: 1, // seconds of height history the autorange frames
@@ -42,7 +44,8 @@ export const S = {
     solidNearOpacity: 0.45, // the grey silhouettes read heavier, so sit lighter
     solidFarOpacity: 0.25,
     solidColor: new THREE.Color(0x22272c), // grey silhouette of the box and stick
-    lift: 0.05, // height above the ground, so the layers don't z-fight
+    patchSegments: 48, // ring resolution of the ground-hugging contact patch
+    lift: 0.1, // height above the ground, so the layers don't z-fight or clip
   },
   rider: {
     size: 4, // edge length of the rider box
@@ -144,6 +147,23 @@ function makeSilhouetteGeometry(pos: Float32Array): THREE.BufferGeometry {
   return geo;
 }
 
+// A ground-hugging disc: a centre vertex and a ring, both written per frame in
+// world space, so the contact patch conforms to bumps and bowls.
+function makeDiscGeometry(
+  pos: Float32Array,
+  segments: number,
+): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry();
+  const attr = new THREE.BufferAttribute(pos, 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute("position", attr);
+  const index: number[] = [];
+  for (let i = 0; i < segments; i++)
+    index.push(0, 1 + i, 1 + ((i + 1) % segments));
+  geo.setIndex(index);
+  return geo;
+}
+
 function makeGridTexture(maxAniso: number): THREE.CanvasTexture {
   const px = 128;
   const canvas = document.createElement("canvas");
@@ -196,7 +216,12 @@ class ChaseCamera {
     this.camera.updateProjectionMatrix();
   }
 
-  follow(pogo: physics.Pogo, dt: number, pitch: number): void {
+  follow(
+    pogo: physics.Pogo,
+    ground: terrain.Terrain,
+    dt: number,
+    pitch: number,
+  ): void {
     const { position, orientation } = pogo;
     this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
 
@@ -207,10 +232,14 @@ class ChaseCamera {
     if (this.forward.lengthSq() > 1e-6) this.forward.normalize();
     else this.forward.set(0, 0, 1);
 
+    // Anchor the vertical frame to the ground under the rider, so the camera
+    // climbs hills with it while staying put through each bounce.
+    const floor = terrain.height(ground, position.x, position.z);
+
     // Autorange: frame the highest the rider has been in the last second, so
     // successive bounces settle instead of pumping the camera as the rider
     // falls. Pull back quickly, ease back in slowly, clamp to the limit.
-    const top = position.y + S.rider.size / 2;
+    const top = position.y + S.rider.size / 2 - floor;
     this.clock += dt;
     this.peaks.push({ t: this.clock, top });
     while (this.peaks[0].t < this.clock - S.camera.peakWindow)
@@ -237,12 +266,13 @@ class ChaseCamera {
       S.camera.maxElevation,
     );
     const horizontal = radius * Math.cos(elevation);
+    const lookY = floor + S.camera.lookY;
     this.camera.position.set(
       position.x - this.forward.x * horizontal,
-      S.camera.lookY + radius * Math.sin(elevation),
+      lookY + radius * Math.sin(elevation),
       position.z - this.forward.z * horizontal,
     );
-    this.camera.lookAt(position.x, S.camera.lookY, position.z);
+    this.camera.lookAt(position.x, lookY, position.z);
   }
 }
 
@@ -252,6 +282,7 @@ class PogoView {
   private readonly rider: THREE.Mesh;
   private readonly stick: THREE.Mesh;
   private readonly patch: THREE.Mesh;
+  private readonly patchPos: Float32Array;
   private readonly boxShadow: THREE.Mesh;
   private readonly stickShadow: THREE.Mesh;
   private readonly riderMat: THREE.MeshStandardMaterial;
@@ -303,12 +334,13 @@ class PogoView {
       side: THREE.DoubleSide,
       ...shadowStencil,
     });
+    const seg = S.shadow.patchSegments;
+    this.patchPos = new Float32Array((seg + 1) * 3);
     this.patch = new THREE.Mesh(
-      new THREE.CircleGeometry(1, 48), // unit circle; scaled per-frame to the world radius
+      makeDiscGeometry(this.patchPos, seg),
       this.patchMat,
     );
-    this.patch.rotation.x = -Math.PI / 2;
-    this.patch.position.y = physics.S.groundY + S.shadow.lift;
+    this.patch.frustumCulled = false;
     this.patch.renderOrder = 0;
 
     this.solidMat = new THREE.MeshBasicMaterial({
@@ -319,19 +351,16 @@ class PogoView {
       side: THREE.DoubleSide,
       ...shadowStencil,
     });
-    const shadowY = physics.S.groundY + S.shadow.lift * 0.5;
     this.boxShadow = new THREE.Mesh(
       makeSilhouetteGeometry(this.boxPos),
       this.solidMat,
     );
-    this.boxShadow.position.y = shadowY;
     this.boxShadow.frustumCulled = false;
     this.boxShadow.renderOrder = 1;
     this.stickShadow = new THREE.Mesh(
       makeSilhouetteGeometry(this.stickPos),
       this.solidMat,
     );
-    this.stickShadow.position.y = shadowY;
     this.stickShadow.frustumCulled = false;
     this.stickShadow.renderOrder = 2;
   }
@@ -365,7 +394,7 @@ class PogoView {
     this.solidMat.dispose();
   }
 
-  update(pogo: physics.Pogo): void {
+  update(pogo: physics.Pogo, ground: terrain.Terrain): void {
     const { position, strain } = pogo;
     this.quat.set(
       pogo.orientation.x,
@@ -391,9 +420,10 @@ class PogoView {
       .add(this.rider.position);
 
     const sh = S.shadow;
+    const bodyGround = terrain.height(ground, position.x, position.z);
     // t = 0 once the rider is stick-length above the ground (stick could hit).
     const t = THREE.MathUtils.clamp(
-      (position.y - physics.S.groundY - physics.S.stickLength) / sh.range,
+      (position.y - bodyGround - physics.S.stickLength) / sh.range,
       0,
       1,
     );
@@ -404,21 +434,38 @@ class PogoView {
     const h = S.rider.size / 2;
     this.center.set(position.x, position.y, position.z);
     this.half.set(h, h, h);
-    this.updateSilhouette(this.boxShadow, this.boxPos, this.center, this.half);
+    this.updateSilhouette(
+      this.boxShadow,
+      this.boxPos,
+      this.center,
+      this.half,
+      ground,
+    );
 
     const w = S.stick.width / 2;
     this.half.set(w, length / 2, w);
-    this.updateSilhouette(this.stickShadow, this.stickPos, this.mid, this.half);
+    this.updateSilhouette(
+      this.stickShadow,
+      this.stickPos,
+      this.mid,
+      this.half,
+      ground,
+    );
     this.solidMat.opacity = THREE.MathUtils.lerp(
       sh.solidNearOpacity,
       sh.solidFarOpacity,
       t,
     );
 
-    // Coloured contact patch, on top of the silhouettes.
-    this.patch.position.set(this.foot.x, physics.S.groundY + sh.lift, this.foot.z);
-    this.patch.scale.setScalar(
+    // Coloured contact patch, on top of the silhouettes, conformed to the ground.
+    this.writeDisc(
+      this.patch,
+      this.patchPos,
+      this.foot.x,
+      this.foot.z,
       THREE.MathUtils.lerp(sh.radiusNear, sh.radiusFar, t),
+      ground,
+      sh.lift,
     );
     if (strain > 0) this.patchMat.color.copy(this.skin.body);
     else this.patchMat.color.copy(this.skin.shadow).lerp(sh.farColor, t);
@@ -430,12 +477,14 @@ class PogoView {
   }
 
   // Writes the ground silhouette of the box (the convex hull of its eight
-  // projected corners) into `pos`, as `shadowCorners` (x, 0, z) triples.
+  // projected corners) into `pos` as `shadowCorners` (x, y, z) triples, each
+  // dropped onto the terrain so it conforms to bumps and bowls.
   private updateSilhouette(
     mesh: THREE.Mesh,
     pos: Float32Array,
     center: THREE.Vector3,
     half: THREE.Vector3,
+    ground: terrain.Terrain,
   ): void {
     const pts = this.hullPts;
     let n = 0;
@@ -456,8 +505,36 @@ class PogoView {
     for (let v = 0; v < shadowCorners; v++) {
       const q = hull[Math.min(v, m - 1)];
       pos[v * 3] = q.x;
-      pos[v * 3 + 1] = 0;
+      pos[v * 3 + 1] = terrain.height(ground, q.x, q.z) + S.shadow.lift;
       pos[v * 3 + 2] = q.z;
+    }
+    (
+      mesh.geometry.getAttribute("position") as THREE.BufferAttribute
+    ).needsUpdate = true;
+  }
+
+  // Writes a ground-hugging disc of `radius` around (cx, cz) into `pos`.
+  private writeDisc(
+    mesh: THREE.Mesh,
+    pos: Float32Array,
+    cx: number,
+    cz: number,
+    radius: number,
+    ground: terrain.Terrain,
+    lift: number,
+  ): void {
+    const segments = pos.length / 3 - 1;
+    pos[0] = cx;
+    pos[1] = terrain.height(ground, cx, cz) + lift;
+    pos[2] = cz;
+    for (let i = 0; i < segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      const x = cx + Math.cos(a) * radius;
+      const z = cz + Math.sin(a) * radius;
+      const o = (i + 1) * 3;
+      pos[o] = x;
+      pos[o + 1] = terrain.height(ground, x, z) + lift;
+      pos[o + 2] = z;
     }
     (
       mesh.geometry.getAttribute("position") as THREE.BufferAttribute
@@ -569,6 +646,43 @@ function occludes(
   return (
     Math.hypot(tree.position.x - cx, tree.position.z - cz) <= tree.radius
   );
+}
+
+// The ground: a plane displaced by the terrain height field, so bumps and bowls
+// show up as geometry.
+class TerrainField {
+  private readonly material: THREE.MeshStandardMaterial;
+  private mesh: THREE.Mesh | null = null;
+  private source: terrain.Terrain | null = null;
+
+  constructor(maxAniso: number) {
+    this.material = new THREE.MeshStandardMaterial({
+      map: makeGridTexture(maxAniso),
+      roughness: 1,
+    });
+  }
+
+  sync(scene: THREE.Scene, source: terrain.Terrain): void {
+    if (this.mesh && this.source === source) return;
+    if (this.mesh) {
+      scene.remove(this.mesh);
+      this.mesh.geometry.dispose();
+    }
+
+    const seg = S.ground.segments;
+    const geo = new THREE.PlaneGeometry(S.ground.size, S.ground.size, seg, seg);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, terrain.height(source, pos.getX(i), pos.getZ(i)));
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    this.mesh = new THREE.Mesh(geo, this.material);
+    scene.add(this.mesh);
+    this.source = source;
+  }
 }
 
 // A picture-frame outline in the gate's own plane (local X across, Y up, Z
@@ -710,6 +824,7 @@ export class Renderer {
   private readonly chase = new ChaseCamera();
   private readonly trees = new TreeField();
   private readonly gates = new GateField();
+  private readonly terrainField: TerrainField;
   private readonly hud = new Hud();
   private readonly views: PogoView[] = [];
 
@@ -728,16 +843,9 @@ export class Renderer {
     sun.position.set(5, 10, 7);
     this.scene.add(sun);
 
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(S.ground.size, S.ground.size),
-      new THREE.MeshStandardMaterial({
-        map: makeGridTexture(this.renderer.capabilities.getMaxAnisotropy()),
-        roughness: 1,
-      }),
+    this.terrainField = new TerrainField(
+      this.renderer.capabilities.getMaxAnisotropy(),
     );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = physics.S.groundY;
-    this.scene.add(ground);
   }
 
   resize(): void {
@@ -753,6 +861,7 @@ export class Renderer {
   render(state: physics.State, dt: number, cameraPitch: number): void {
     this.trees.sync(this.scene, state.level.trees);
     this.gates.sync(this.scene, state.level.gates);
+    this.terrainField.sync(this.scene, state.level.terrain);
     const pogos = state.pogos;
     while (this.views.length < pogos.length) {
       const view = new PogoView(
@@ -765,11 +874,12 @@ export class Renderer {
       this.views.pop()!.dispose(this.scene);
     }
 
-    for (let i = 0; i < pogos.length; i++) this.views[i].update(pogos[i]);
+    for (let i = 0; i < pogos.length; i++)
+      this.views[i].update(pogos[i], state.level.terrain);
 
     if (pogos.length > 0) {
       const focus = pogos[0]; // pogos[0] is "us"
-      this.chase.follow(focus, dt, cameraPitch);
+      this.chase.follow(focus, state.level.terrain, dt, cameraPitch);
       this.trees.update(this.camera.position, focus.position);
       this.gates.update(focus.nextGate, focus.lap, state.level.laps);
     }
