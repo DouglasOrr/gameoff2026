@@ -9,11 +9,11 @@ export const S = {
   springStiffness: 600,
   maxStrainRatio: 1 / 6, // axial compression cap as a fraction of the stick length
   spawnDrop: 30, // spawn height of the rider above its resting contact height
-  friction: 0.15, // Coulomb friction coefficient at the foot
+  friction: 0.2, // Coulomb friction coefficient at the foot
   frictionSlip: 0.05, // tanh scale that smooths Coulomb stiction near zero slip
-  drag: 0.002, // quadratic air resistance
-  bounceBoost: 10, // fixed extra speed per bounce (active spring), spread over extension
-  megaBoost: 50, // extra speed while holding the mega boost, spread over extension
+  drag: 0.007, // quadratic air resistance
+  bounceBoost: 25, // fixed extra speed per bounce (active spring), spread over extension
+  megaBoost: 75, // extra speed while holding the mega boost, spread over extension
   treeBounce: 0.5, // restitution when rebounding off a tree
   rampBounce: 0.5, // restitution when rebounding off a ramp's vertical faces
   riderRadius: 2.5, // pogo collision radius at the rider
@@ -217,8 +217,7 @@ function faceStrain(
   z1: number,
 ): number {
   const L = S.stickLength;
-  const denom =
-    normal.x * axis.x + normal.y * axis.y + normal.z * axis.z;
+  const denom = normal.x * axis.x + normal.y * axis.y + normal.z * axis.z;
   if (denom >= -1e-9) return 0; // the tip slides along the face, not into it
   const raw =
     (normal.x * (point.x - p.x) +
