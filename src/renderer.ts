@@ -1,6 +1,7 @@
 // 3D rendering of the state from physics.
 
 import * as THREE from "three";
+import * as math from "./math";
 import * as physics from "./physics";
 import * as terrain from "./terrain";
 
@@ -34,6 +35,11 @@ export const S = {
     minElevation: -0.1, // rad the camera may dip below the focus (peek up)
     maxElevation: 1.1, // rad it may rise above it (peek down)
   },
+  top: {
+    fov: 50, // fixed; the framing distance is what adapts
+    fitPadding: 0.8, // fraction of the half-FOV the gate bounds may use
+    far: 5000, // the top-down camera sits well back, and runs without fog
+  },
   shadow: {
     radiusNear: 2.5,
     radiusFar: 1.75,
@@ -64,7 +70,7 @@ export const S = {
     colors: {
       next: 0x3ad17a, // the player's next gate
       soon: 0xe8c33b, // the one after that
-      other: 0x55606b,
+      other: 0x333a42, // dark enough to read against the ground
     },
     opacity: 0.4, // translucent
     border: 0.15, // frame thickness, as a fraction of the smaller half-size
@@ -276,6 +282,78 @@ class ChaseCamera {
       position.z - this.forward.z * horizontal,
     );
     this.camera.lookAt(position.x, lookY, position.z);
+  }
+}
+
+type Bounds2 = { minX: number; maxX: number; minZ: number; maxZ: number };
+
+// Axis-aligned XZ bounds of the gates' footprints: each gate's centre, spread by
+// its half-width (local X) and half-depth (local Z) through the gate's yaw, so
+// the framing covers the frames themselves rather than just their centres.
+function gateBounds(gates: readonly physics.Gate[]): Bounds2 | null {
+  if (gates.length === 0) return null;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const gate of gates) {
+    const across = math.rotate(gate.orientation, { x: 1, y: 0, z: 0 });
+    const along = math.rotate(gate.orientation, { x: 0, y: 0, z: 1 });
+    const w = gate.width / 2;
+    const d = gate.depth / 2;
+    for (const sx of [-1, 1])
+      for (const sz of [-1, 1]) {
+        const x = gate.position.x + sx * w * across.x + sz * d * along.x;
+        const z = gate.position.z + sx * w * across.z + sz * d * along.z;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+      }
+  }
+  return { minX, maxX, minZ, maxZ };
+}
+
+// Fixed top-down camera that frames the whole gate layout at once, for editing
+// levels. It centres on the gates' XZ bounds and backs off just far enough that
+// the bounds fit the padded vertical FOV (and the horizontal one, via aspect).
+class TopCamera {
+  readonly camera: THREE.PerspectiveCamera;
+
+  constructor() {
+    this.camera = new THREE.PerspectiveCamera(S.top.fov, 1, 0.1, S.top.far);
+    // Looking straight down, so the default up (+Y) is degenerate: use -Z up so
+    // the screen shows +X right and -Z up, matching a plan view of the level.
+    this.camera.up.set(0, 0, -1);
+  }
+
+  resize(aspect: number): void {
+    this.camera.aspect = aspect;
+    this.camera.updateProjectionMatrix();
+  }
+
+  frame(gates: readonly physics.Gate[]): void {
+    const bounds = gateBounds(gates);
+    if (!bounds) {
+      this.camera.position.set(0, S.top.far / 4, 0);
+      this.camera.lookAt(0, 0, 0);
+      return;
+    }
+
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cz = (bounds.minZ + bounds.maxZ) / 2;
+    const halfX = (bounds.maxX - bounds.minX) / 2;
+    const halfZ = (bounds.maxZ - bounds.minZ) / 2;
+
+    // Distance at which a half-extent fills the padded half-FOV. Take the worst
+    // of the two axes, so neither the width nor the depth is cropped.
+    const tanV =
+      Math.tan(THREE.MathUtils.degToRad(S.top.fov / 2)) * S.top.fitPadding;
+    const tanH = tanV * Math.max(this.camera.aspect, 1e-3);
+    const distance = Math.max(halfZ / tanV, halfX / tanH);
+
+    this.camera.position.set(cx, distance, cz);
+    this.camera.lookAt(cx, 0, cz);
   }
 }
 
@@ -614,7 +692,8 @@ class TreeField {
     let ghost = 0;
     for (let i = 0; i < trees.length; i++) {
       const matrix = this.matrices[i];
-      if (occludes(trees[i], camera, focus)) this.ghost.setMatrixAt(ghost++, matrix);
+      if (occludes(trees[i], camera, focus))
+        this.ghost.setMatrixAt(ghost++, matrix);
       else this.opaque.setMatrixAt(opaque++, matrix);
     }
     this.opaque.count = opaque;
@@ -646,9 +725,7 @@ function occludes(
       : 0;
   const cx = camera.x + dx * t;
   const cz = camera.z + dz * t;
-  return (
-    Math.hypot(tree.position.x - cx, tree.position.z - cz) <= tree.radius
-  );
+  return Math.hypot(tree.position.x - cx, tree.position.z - cz) <= tree.radius;
 }
 
 // A ramp's solid: a trapezoid cross-section (the rise, the optional flat top,
@@ -834,14 +911,13 @@ class GateField {
     const finish = lap === laps - 1 && next === n - 1;
     const soon = done || finish ? -1 : (next + 1) % n;
     for (let i = 0; i < n; i++) {
-      const color =
-        done
-          ? S.gate.colors.other
-          : i === next
-            ? S.gate.colors.next
-            : i === soon
-              ? S.gate.colors.soon
-              : S.gate.colors.other;
+      const color = done
+        ? S.gate.colors.other
+        : i === next
+          ? S.gate.colors.next
+          : i === soon
+            ? S.gate.colors.soon
+            : S.gate.colors.other;
       this.mats[i].color.setHex(color);
     }
   }
@@ -880,18 +956,22 @@ class Hud {
   }
 }
 
+export type CameraMode = "chase" | "top";
+
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
-  readonly camera: THREE.PerspectiveCamera;
   readonly scene = new THREE.Scene();
 
   private readonly chase = new ChaseCamera();
+  private readonly top = new TopCamera();
+  private readonly fog = new THREE.Fog(S.background, S.fog.near, S.fog.far);
   private readonly trees = new TreeField();
   private readonly gates = new GateField();
   private readonly ramps = new RampField();
   private readonly terrainField: TerrainField;
   private readonly hud = new Hud();
   private readonly views: PogoView[] = [];
+  private mode: CameraMode = "chase";
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -899,10 +979,9 @@ export class Renderer {
       antialias: true,
       stencil: true,
     });
-    this.camera = this.chase.camera;
 
     this.scene.background = new THREE.Color(S.background);
-    this.scene.fog = new THREE.Fog(S.background, S.fog.near, S.fog.far);
+    this.scene.fog = this.fog;
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.2));
     const sun = new THREE.DirectionalLight(0xffffff, 2.5);
     sun.position.set(5, 10, 7);
@@ -913,6 +992,24 @@ export class Renderer {
     );
   }
 
+  get camera(): THREE.PerspectiveCamera {
+    return this.mode === "top" ? this.top.camera : this.chase.camera;
+  }
+
+  get cameraMode(): CameraMode {
+    return this.mode;
+  }
+
+  setCameraMode(mode: CameraMode): void {
+    this.mode = mode;
+    // The top camera sits too far back for the chase fog, so drop it there.
+    this.scene.fog = mode === "chase" ? this.fog : null;
+  }
+
+  toggleCamera(): void {
+    this.setCameraMode(this.mode === "chase" ? "top" : "chase");
+  }
+
   resize(): void {
     const canvas = this.renderer.domElement;
     const w = canvas.clientWidth;
@@ -920,7 +1017,9 @@ export class Renderer {
     if (w === 0 || h === 0) return;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(w, h, false);
-    this.chase.resize(w / h);
+    const aspect = w / h;
+    this.chase.resize(aspect);
+    this.top.resize(aspect);
   }
 
   render(state: physics.State, dt: number, cameraPitch: number): void {
@@ -943,12 +1042,18 @@ export class Renderer {
     for (let i = 0; i < pogos.length; i++)
       this.views[i].update(pogos[i], state.level);
 
-    if (pogos.length > 0) {
+    if (this.mode === "top") {
+      // Frame the whole track from above; passing the camera as its own focus
+      // keeps every tree opaque, since no sightline can be blocked from there.
+      this.top.frame(state.level.gates);
+      this.trees.update(this.camera.position, this.camera.position);
+    } else if (pogos.length > 0) {
       const focus = pogos[0]; // pogos[0] is "us"
       this.chase.follow(focus, state.level.terrain, dt, cameraPitch);
       this.trees.update(this.camera.position, focus.position);
-      this.gates.update(focus.nextGate, focus.lap, state.level.laps);
     }
+    if (pogos.length > 0)
+      this.gates.update(pogos[0].nextGate, pogos[0].lap, state.level.laps);
     this.hud.update(state);
     this.renderer.render(this.scene, this.camera);
   }

@@ -23,6 +23,7 @@ export class Input {
   };
   private mouseDx = 0;
   private mouseDy = 0;
+  private cameraToggle = false;
   cameraPitch = 0; // camera look up/down, driven by vertical mouse movement
 
   constructor(canvas: HTMLCanvasElement) {
@@ -59,8 +60,19 @@ export class Input {
     return input;
   }
 
+  /** Read & reset the camera toggle state. */
+  readCameraToggle(): boolean {
+    const on = this.cameraToggle;
+    this.cameraToggle = false;
+    return on;
+  }
+
   private onKey(e: KeyboardEvent, isDown: boolean): void {
     const key = e.key.toLowerCase();
+    if (key === "c") {
+      if (isDown && !e.repeat) this.cameraToggle = true;
+      return;
+    }
     if (!Object.hasOwn(this.held, key)) return;
     // Shift is a modifier: record it but don't swallow its default.
     if (key !== "shift") e.preventDefault();

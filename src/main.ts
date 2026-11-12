@@ -13,6 +13,11 @@ window.addEventListener("resize", () => renderer.resize());
 renderer.resize();
 
 const input = new Input(canvas);
+// ?camera=top starts in the level-editing view (anything else is chase). The URL
+// survives Vite's reload on save, so editing a level file drops you straight
+// back into that view.
+const camera = new URLSearchParams(location.search).get("camera");
+renderer.setCameraMode(camera === "top" ? "top" : "chase");
 const state = physics.loadLevel(demo, 2);
 // pogos[0] is the player; the rest are flown by pilots.
 const pilots = state.pogos.slice(1).map((pogo, i) => new Pilot(pogo, i + 1));
@@ -32,6 +37,7 @@ renderer.renderer.setAnimationLoop((now: number) => {
   acc += dt;
 
   state.pogos[0].input = input.read(dt);
+  if (input.readCameraToggle()) renderer.toggleCamera();
   for (const pilot of pilots) pilot.update(dt);
 
   while (acc >= FIXED_DT) {
