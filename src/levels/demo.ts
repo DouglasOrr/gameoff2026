@@ -27,14 +27,37 @@ const ground: terrain.Terrain = {
 };
 
 const ramps = rampList(ground);
+const halfPipes = halfPipeList(ground);
 
 export const demo: physics.Level = {
   gates: gateRing(ground),
-  trees: forest(ground, ramps),
+  trees: forest(ground, ramps, halfPipes),
   ramps,
+  halfPipes,
   terrain: ground,
   laps: 2,
 };
+
+// A half-pipe running through the gate just past the opening ramp. Hop between
+// the walls to keep height and carry on through the gate.
+function halfPipeList(t: terrain.Terrain): physics.HalfPipe[] {
+  const radius = 600; // the loop the gates sit on
+  const step = 1; // the second gate, at 45 degrees
+  const theta = (step / 8) * Math.PI * 2;
+  const orientation = math.rotationAboutY(theta + Math.PI / 2); // along the loop
+  const gx = radius * Math.sin(theta);
+  const gz = radius * Math.cos(theta);
+  return [
+    {
+      // Centred on the gate, so it runs straight through and past it.
+      position: { x: gx, y: terrain.height(t, gx, gz), z: gz },
+      orientation,
+      length: 300,
+      angle: Math.PI / 2, // 90 degree opening, so the walls are at 45 degrees
+      height: 100,
+    },
+  ];
+}
 
 // Ramps set on the racing line between gates: a plain kicker and a couple with
 // a flat top to launch from.
@@ -83,8 +106,12 @@ function gateRing(t: terrain.Terrain): physics.Gate[] {
   return gates;
 }
 
-// A fixed scatter of cones, clear of the spawn area and the ramps.
-function forest(t: terrain.Terrain, ramps: physics.Ramp[]): physics.Tree[] {
+// A fixed scatter of cones, clear of the spawn area, the ramps and the pipes.
+function forest(
+  t: terrain.Terrain,
+  ramps: physics.Ramp[],
+  halfPipes: physics.HalfPipe[],
+): physics.Tree[] {
   const count = 90;
   const spread = 900; // scattered within +/- this of the origin
   const clear = 70; // keep this radius around the origin clear
@@ -95,6 +122,13 @@ function forest(t: terrain.Terrain, ramps: physics.Ramp[]): physics.Tree[] {
 
   const blocked = (x: number, z: number): boolean => {
     if (Math.hypot(x, z) < clear) return true;
+    if (
+      halfPipes.some((p) => {
+        const reach = Math.hypot(p.height * Math.tan(p.angle / 2), p.length / 2);
+        return Math.hypot(x - p.position.x, z - p.position.z) < reach + 20;
+      })
+    )
+      return true;
     return ramps.some((r) => {
       const reach = Math.hypot(r.width / 2, (r.length + r.flat) / 2) + 20;
       return Math.hypot(x - r.position.x, z - r.position.z) < reach;

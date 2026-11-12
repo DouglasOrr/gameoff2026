@@ -84,6 +84,10 @@ export const S = {
     color: 0x9c6f43,
     ghostOpacity: 0.25, // when a ramp blocks the chase camera, like the trees
   },
+  halfPipe: {
+    color: 0x6b7683,
+    ghostOpacity: 0.25, // when a pipe blocks the chase camera, like the trees
+  },
 };
 
 type Skin = { body: THREE.Color; shadow: THREE.Color };
@@ -841,6 +845,104 @@ function rampGeometry(ramp: physics.Ramp): THREE.BufferGeometry {
   return geo;
 }
 
+// One solid side of a half-pipe: a triangular prism running along local Z, with
+// a vertical outer face and the slanted wall on the inside. `side` is -1 or +1.
+function halfPipeSide(
+  pipe: physics.HalfPipe,
+  side: number,
+): THREE.BufferGeometry {
+  const w = pipe.height * Math.tan(pipe.angle / 2);
+  const shape = new THREE.Shape();
+  if (side < 0) {
+    shape.moveTo(-w, 0);
+    shape.lineTo(0, 0);
+    shape.lineTo(-w, pipe.height);
+  } else {
+    shape.moveTo(0, 0);
+    shape.lineTo(w, 0);
+    shape.lineTo(w, pipe.height);
+  }
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: pipe.length,
+    bevelEnabled: false,
+  });
+  geo.translate(0, 0, -pipe.length / 2); // extrudes forward; centre the length
+  return geo;
+}
+
+// Static half-pipes, each rendered as its two solid sides. A pipe that blocks
+// the camera -> rider sightline fades out, just like the trees and ramps; the
+// footprint test keeps it solid while the rider is inside it.
+class HalfPipeField {
+  private readonly material: THREE.MeshStandardMaterial;
+  private readonly ghostMat: THREE.MeshStandardMaterial;
+  private readonly group = new THREE.Group();
+  private readonly geoms: THREE.BufferGeometry[] = [];
+  private readonly sides: THREE.Mesh[][] = [];
+  private pipes: readonly physics.HalfPipe[] | null = null;
+
+  constructor() {
+    const base = {
+      color: S.halfPipe.color,
+      roughness: 0.9,
+      flatShading: true,
+    };
+    this.material = new THREE.MeshStandardMaterial(base);
+    this.ghostMat = ghosted(base, S.halfPipe.ghostOpacity);
+  }
+
+  sync(scene: THREE.Scene, pipes: readonly physics.HalfPipe[]): void {
+    if (this.pipes === pipes) return;
+    for (const geo of this.geoms) geo.dispose();
+    this.geoms.length = 0;
+    this.sides.length = 0;
+    this.group.clear();
+
+    for (const pipe of pipes) {
+      const sides: THREE.Mesh[] = [];
+      for (const side of [-1, 1]) {
+        const geo = halfPipeSide(pipe, side);
+        const mesh = new THREE.Mesh(geo, this.material);
+        mesh.position.set(pipe.position.x, pipe.position.y, pipe.position.z);
+        mesh.quaternion.set(
+          pipe.orientation.x,
+          pipe.orientation.y,
+          pipe.orientation.z,
+          pipe.orientation.w,
+        );
+        this.geoms.push(geo);
+        this.group.add(mesh);
+        sides.push(mesh);
+      }
+      this.sides.push(sides);
+    }
+
+    this.pipes = pipes;
+    if (!this.group.parent) scene.add(this.group);
+  }
+
+  update(camera: Point2, target: Point2): void {
+    const pipes = this.pipes;
+    if (!pipes) return;
+    for (let i = 0; i < pipes.length; i++) {
+      const pipe = pipes[i];
+      const rect: Footprint = {
+        kind: "rect",
+        centre: pipe.position,
+        orientation: pipe.orientation,
+        halfWidth: pipe.height * Math.tan(pipe.angle / 2),
+        halfRun: pipe.length / 2,
+      };
+      const mat = occludes(rect, camera, target)
+        ? this.ghostMat
+        : this.material;
+      for (const side of this.sides[i]) side.material = mat;
+    }
+  }
+}
+
 // Static ramps. They share two materials (solid and ghosted) so only the
 // geometry varies; a ramp that blocks the camera -> rider sightline fades out,
 // just like the trees.
@@ -1088,6 +1190,7 @@ export class Renderer {
   private readonly trees = new TreeField();
   private readonly gates = new GateField();
   private readonly ramps = new RampField();
+  private readonly halfPipes = new HalfPipeField();
   private readonly terrainField: TerrainField;
   private readonly hud = new Hud();
   private readonly views: PogoView[] = [];
@@ -1146,6 +1249,7 @@ export class Renderer {
     this.trees.sync(this.scene, state.level.trees);
     this.gates.sync(this.scene, state.level.gates);
     this.ramps.sync(this.scene, state.level.ramps);
+    this.halfPipes.sync(this.scene, state.level.halfPipes);
     this.terrainField.sync(this.scene, state.level.terrain);
     const pogos = state.pogos;
     while (this.views.length < pogos.length) {
@@ -1169,12 +1273,14 @@ export class Renderer {
       const at = this.camera.position;
       this.trees.update(at, at);
       this.ramps.update(at, at);
+      this.halfPipes.update(at, at);
     } else if (pogos.length > 0) {
       const focus = pogos[0]; // pogos[0] is "us"
       this.chase.follow(focus, state.level.terrain, dt, cameraPitch);
       const foot = footXZ(focus);
       this.trees.update(this.camera.position, foot);
       this.ramps.update(this.camera.position, foot);
+      this.halfPipes.update(this.camera.position, foot);
     }
     if (pogos.length > 0)
       this.gates.update(pogos[0].nextGate, pogos[0].lap, state.level.laps);

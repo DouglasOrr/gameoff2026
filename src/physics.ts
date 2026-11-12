@@ -58,6 +58,17 @@ export type Ramp = {
   height: number;
 };
 
+// A V-shaped half-pipe: a straight trough whose two walls meet on the centreline
+// at the ground and rise to `height`, opening at `angle` (the full angle between
+// them). You hop between the walls to keep height. Yaw-only.
+export type HalfPipe = {
+  position: math.Vec3; // centre of the base, on the ground
+  orientation: math.Quat;
+  length: number; // span along local +Z
+  angle: number; // full opening angle of the V (radians)
+  height: number; // rise of each wall from the centreline
+};
+
 // A checkpoint: an oriented box the rider passes through along local Z.
 export type Gate = {
   position: math.Vec3;
@@ -70,6 +81,7 @@ export type Level = {
   gates: Gate[];
   trees: Tree[];
   ramps: Ramp[];
+  halfPipes: HalfPipe[];
   terrain: terrain.Terrain;
   laps: number;
 };
@@ -158,16 +170,24 @@ function contactStrain(level: Level, p: math.Vec3, axis: math.Vec3): number {
   let strain = terrainStrain(level.terrain, p, axis);
   for (const ramp of level.ramps)
     strain = Math.max(strain, rampStrain(ramp, p, axis));
+  for (const pipe of level.halfPipes) {
+    strain = Math.max(strain, halfPipeStrain(pipe, -1, p, axis));
+    strain = Math.max(strain, halfPipeStrain(pipe, 1, p, axis));
+  }
   return strain;
 }
 
-// Local (x, z) of a world point in a ramp's frame. Yaw-only, so only the
-// horizontal offset rotates.
-function toRamp(ramp: Ramp, x: number, z: number): { x: number; z: number } {
-  const d = math.rotate(math.conjugateQuat(ramp.orientation), {
-    x: x - ramp.position.x,
+// Local (x, z) of a world point in a yaw-only frame at `origin`.
+function toLocal(
+  origin: math.Vec3,
+  orientation: math.Quat,
+  x: number,
+  z: number,
+): { x: number; z: number } {
+  const d = math.rotate(math.conjugateQuat(orientation), {
+    x: x - origin.x,
     y: 0,
-    z: z - ramp.position.z,
+    z: z - origin.z,
   });
   return { x: d.x, z: d.z };
 }
@@ -195,10 +215,16 @@ function rampTop(ramp: Ramp, lz: number): number {
 export function groundHeight(level: Level, x: number, z: number): number {
   let h = terrain.height(level.terrain, x, z);
   for (const ramp of level.ramps) {
-    const l = toRamp(ramp, x, z);
+    const l = toLocal(ramp.position, ramp.orientation, x, z);
     const half = (ramp.length + ramp.flat) / 2;
     if (Math.abs(l.x) <= ramp.width / 2 && Math.abs(l.z) <= half)
       h = Math.max(h, ramp.position.y + rampTop(ramp, l.z));
+  }
+  for (const pipe of level.halfPipes) {
+    const l = toLocal(pipe.position, pipe.orientation, x, z);
+    const w = pipe.height * Math.tan(pipe.angle / 2);
+    if (Math.abs(l.z) <= pipe.length / 2 && Math.abs(l.x) <= w)
+      h = Math.max(h, pipe.position.y + (Math.abs(l.x) / w) * pipe.height);
   }
   return h;
 }
@@ -227,7 +253,12 @@ function faceStrain(
   // Clamp like the terrain solve: a face needing more than the stick's travel
   // still presses at full compression, rather than dropping the contact.
   const u = Math.min(Math.max(raw, lo), L);
-  const l = toRamp(ramp, p.x + u * axis.x, p.z + u * axis.z);
+  const l = toLocal(
+    ramp.position,
+    ramp.orientation,
+    p.x + u * axis.x,
+    p.z + u * axis.z,
+  );
   if (Math.abs(l.x) > ramp.width / 2 || l.z < z0 || l.z > z1) return 0;
   return L - u;
 }
@@ -275,6 +306,51 @@ function rampStrain(ramp: Ramp, p: math.Vec3, axis: math.Vec3): number {
   return strain;
 }
 
+// Axial compression that rests the tip on one of a half-pipe's slanted walls, or
+// 0 if it misses it. `side` is -1 for the wall on local -x, +1 for +x.
+function halfPipeStrain(
+  pipe: HalfPipe,
+  side: number,
+  p: math.Vec3,
+  axis: math.Vec3,
+): number {
+  const L = S.stickLength;
+  const lo = L - S.maxStrainRatio * L;
+  const phi = pipe.angle / 2;
+
+  // The wall's inward normal (local): up and back toward the centreline.
+  const normal = math.rotate(pipe.orientation, {
+    x: -side * Math.cos(phi),
+    y: Math.sin(phi),
+    z: 0,
+  });
+  const denom = normal.x * axis.x + normal.y * axis.y + normal.z * axis.z;
+  if (denom >= -1e-9) return 0;
+  const raw =
+    (normal.x * (pipe.position.x - p.x) +
+      normal.y * (pipe.position.y - p.y) +
+      normal.z * (pipe.position.z - p.z)) /
+    denom;
+  // Test the face where the stick actually meets the plane, not at a clamped
+  // length: clamping first drags a tip that is off the wall back onto it, which
+  // would fake a wall extending past the top edge.
+  if (raw < 0 || raw > L) return 0;
+
+  const tip = {
+    x: p.x + raw * axis.x,
+    y: p.y + raw * axis.y,
+    z: p.z + raw * axis.z,
+  };
+  const l = toLocal(pipe.position, pipe.orientation, tip.x, tip.z);
+  if (Math.abs(l.z) > pipe.length / 2) return 0;
+
+  // Along the wall from the centreline to the top edge; must land on the face.
+  const along =
+    l.x * side * Math.sin(phi) + (tip.y - pipe.position.y) * Math.cos(phi);
+  if (along < 0 || along > pipe.height / Math.cos(phi)) return 0;
+  return L - Math.max(raw, lo);
+}
+
 // Rebound the pogo off a ramp's vertical faces - the lip and the two sides. The
 // top is handled by the ground contact, so here a sphere only bounces when it is
 // outside the footprint, hard against a side or the lip; inside the footprint it
@@ -289,7 +365,7 @@ function bounceOffRamp(
   r: number,
 ): void {
   const half = (ramp.length + ramp.flat) / 2;
-  const l = toRamp(ramp, sx, sz);
+  const l = toLocal(ramp.position, ramp.orientation, sx, sz);
   const ly = sy - ramp.position.y;
   if (ly >= rampTop(ramp, l.z) - r) return; // on or above the top: not a wall
   if (ly < -r) return; // under the base: the ground's job
@@ -315,6 +391,65 @@ function bounceOffRamp(
     const j = (1 + S.rampBounce) * vn;
     v.x -= j * n.x;
     v.z -= j * n.z;
+  }
+}
+
+// Push a sphere out along `n` by `pen`, reflecting its velocity (restitution e).
+function pushOut(
+  p: math.Vec3,
+  v: math.Vec3,
+  n: math.Vec3,
+  pen: number,
+  e: number,
+): void {
+  p.x += n.x * pen;
+  p.y += n.y * pen;
+  p.z += n.z * pen;
+  const vn = v.x * n.x + v.y * n.y + v.z * n.z;
+  if (vn < 0) {
+    const j = (1 + e) * vn;
+    v.x -= j * n.x;
+    v.y -= j * n.y;
+    v.z -= j * n.z;
+  }
+}
+
+// Rebound the pogo off a half-pipe's solid faces from outside: the vertical
+// outer side and the triangular end caps. `side` is -1 or +1. The slanted walls
+// are the contact surfaces, handled elsewhere.
+function bounceOffHalfPipe(
+  p: math.Vec3,
+  v: math.Vec3,
+  pipe: HalfPipe,
+  side: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  r: number,
+): void {
+  const w = pipe.height * Math.tan(pipe.angle / 2);
+  const half = pipe.length / 2;
+  const l = toLocal(pipe.position, pipe.orientation, sx, sz);
+  const ly = sy - pipe.position.y;
+  if (ly < -r || ly > pipe.height + r) return;
+
+  // The vertical outer face, over the length.
+  const outside = side * l.x - w;
+  if (outside >= 0 && outside < r && Math.abs(l.z) < half + r) {
+    const n = math.rotate(pipe.orientation, { x: side, y: 0, z: 0 });
+    pushOut(p, v, n, r - outside, S.rampBounce);
+  }
+
+  // The triangular end caps, when the sphere is within the solid section.
+  const lx = side * l.x;
+  if (lx >= 0 && lx <= w && ly >= 0 && ly < (lx / w) * pipe.height) {
+    for (const end of [-1, 1]) {
+      const beyond = end * l.z - half;
+      if (beyond >= 0 && beyond < r) {
+        const n = math.rotate(pipe.orientation, { x: 0, y: 0, z: end });
+        pushOut(p, v, n, r - beyond, S.rampBounce);
+      }
+    }
   }
 }
 
@@ -411,7 +546,7 @@ export function step(state: State, dt: number): void {
 }
 
 function stepPogo(pogo: Pogo, level: Level, dt: number): void {
-  const { trees, ramps, gates, laps } = level;
+  const { trees, ramps, halfPipes, gates, laps } = level;
   if (pogo.lap < laps) pogo.time += dt;
   const input = pogo.input;
   const { position: p, velocity: v } = pogo;
@@ -468,13 +603,17 @@ function stepPogo(pogo: Pogo, level: Level, dt: number): void {
   p.y += v.y * dt;
   p.z += v.z * dt;
 
-  // Trees and ramps are solid: rebound off any the pogo overlaps, at the rider
-  // and at the foot of the stick.
+  // Trees, ramps and half-pipes are solid: rebound off any the pogo overlaps,
+  // at the rider and at the foot of the stick.
   for (const tree of trees) {
     bounceOffTree(p, v, tree, p.x, p.y, p.z, S.riderRadius);
   }
   for (const ramp of ramps) {
     bounceOffRamp(p, v, ramp, p.x, p.y, p.z, S.riderRadius);
+  }
+  for (const pipe of halfPipes) {
+    bounceOffHalfPipe(p, v, pipe, -1, p.x, p.y, p.z, S.riderRadius);
+    bounceOffHalfPipe(p, v, pipe, 1, p.x, p.y, p.z, S.riderRadius);
   }
   const footLen = S.stickLength - contactStrain(level, p, axis);
   for (const tree of trees) {
@@ -498,6 +637,13 @@ function stepPogo(pogo: Pogo, level: Level, dt: number): void {
       p.z + axis.z * footLen,
       S.footRadius,
     );
+  }
+  for (const pipe of halfPipes) {
+    const fx = p.x + axis.x * footLen;
+    const fy = p.y + axis.y * footLen;
+    const fz = p.z + axis.z * footLen;
+    bounceOffHalfPipe(p, v, pipe, -1, fx, fy, fz, S.footRadius);
+    bounceOffHalfPipe(p, v, pipe, 1, fx, fy, fz, S.footRadius);
   }
 
   // Recompute strain from the new pose so the rendered foot sits on the floor.

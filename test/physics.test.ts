@@ -15,6 +15,7 @@ const cloneLevel = (level: physics.Level): physics.Level => ({
   gates: level.gates.map((g) => ({ ...g })),
   trees: level.trees.map((t) => ({ ...t })),
   ramps: level.ramps.map((r) => ({ ...r })),
+  halfPipes: level.halfPipes.map((p) => ({ ...p })),
 });
 
 const makeState = (count = 1) => physics.loadLevel(cloneLevel(demo), count);
@@ -74,8 +75,9 @@ describe("physics bounce", () => {
     );
     // No tunnelling through the ground.
     expect(minY).toBeGreaterThan(0);
-    // The active spring balances drag, so it settles near the drop height.
-    expect(maxAfterBounce).toBeGreaterThan(startY - 2);
+    // The active spring mostly balances drag, so it settles near the drop
+    // height (a little short, since drag is now fairly strong).
+    expect(maxAfterBounce).toBeGreaterThan(startY - 4);
   });
 
   it("keeps the foot on the ground while in contact", () => {
@@ -374,7 +376,9 @@ describe("ramps", () => {
       const s = makeState();
       s.level = { ...s.level, terrain: flat, trees: [], ramps };
       const p = pogo(s);
-      p.position = { x: 0, y: physics.S.stickLength + 2, z: -100 };
+      // Start close to the ramp: from further back, drag bleeds off the approach
+      // speed before the rider reaches the slope.
+      p.position = { x: 0, y: physics.S.stickLength + 2, z: -60 };
       p.velocity = { x: 0, y: 0, z: 90 };
       p.orientation = math.identityQuat();
       let top = 0;
@@ -385,6 +389,101 @@ describe("ramps", () => {
       return top;
     };
     expect(run([kicker])).toBeGreaterThan(run([]) + 10);
+  });
+});
+
+describe("half-pipes", () => {
+  const flat: terrain.Terrain = { base: 0, features: [] };
+
+  // 90 degree opening, so the walls are 45 degrees and rise as y = |x|.
+  const pipe: physics.HalfPipe = {
+    position: { x: 0, y: 0, z: 0 },
+    orientation: math.identityQuat(),
+    length: 400,
+    angle: Math.PI / 2,
+    height: 60,
+  };
+
+  it("reports the wall as ground height", () => {
+    const level: physics.Level = { ...demo, terrain: flat, halfPipes: [pipe] };
+    expect(physics.groundHeight(level, 0, 0)).toBeCloseTo(0, 6); // the vertex
+    expect(physics.groundHeight(level, 30, 0)).toBeCloseTo(30, 6); // mid-wall
+    expect(physics.groundHeight(level, 90, 0)).toBeCloseTo(0, 6); // past the top
+  });
+
+  it("rests the stick on a slanted wall", () => {
+    const s = makeState();
+    s.level = {
+      ...s.level,
+      terrain: flat,
+      trees: [],
+      ramps: [],
+      halfPipes: [pipe],
+    };
+    const p = pogo(s);
+    p.position = { x: 30, y: 30 + physics.S.stickLength - 2, z: 0 };
+    p.orientation = math.identityQuat();
+    step(s);
+    expect(p.strain).toBeGreaterThan(0);
+    const axis = math.rotate(p.orientation, { x: 0, y: -1, z: 0 });
+    const len = physics.S.stickLength - p.strain;
+    const footX = p.position.x + axis.x * len;
+    const footY = p.position.y + axis.y * len;
+    expect(footY).toBeCloseTo(footX, 6); // on the 45 degree wall, y = |x|
+  });
+
+  it("bounces a rider off an end cap", () => {
+    const s = makeState();
+    s.level = {
+      ...s.level,
+      terrain: flat,
+      trees: [],
+      ramps: [],
+      halfPipes: [pipe],
+    };
+    const p = pogo(s);
+    // Outside the +z cap, inside the solid's triangular section, flying in.
+    p.position = { x: 30, y: 15, z: 202 };
+    p.velocity = { x: 0, y: 0, z: -40 };
+    p.orientation = math.identityQuat();
+    for (let i = 0; i < 30; i++) step(s);
+    expect(p.velocity.z).toBeGreaterThan(0); // pushed back out along +z
+  });
+
+  it("does not fake a wall beyond the top edge", () => {
+    const s = makeState();
+    s.level = {
+      ...s.level,
+      terrain: flat,
+      trees: [],
+      ramps: [],
+      halfPipes: [pipe],
+    };
+    const p = pogo(s);
+    // Just past the top edge (x = w = 60), level with where the wall plane
+    // would be. A clamped solve used to drag this onto the wall; it must not.
+    p.position = { x: 65, y: 65, z: 0 };
+    p.orientation = math.identityQuat();
+    step(s);
+    expect(p.strain).toBe(0);
+  });
+
+  it("bounces a rider off the outer side", () => {
+    const s = makeState();
+    s.level = {
+      ...s.level,
+      terrain: flat,
+      trees: [],
+      ramps: [],
+      halfPipes: [pipe],
+    };
+    const p = pogo(s);
+    // The wall top is at x = 60 (height * tan 45); approach it from outside.
+    p.position = { x: 64, y: 50, z: 0 };
+    p.velocity = { x: -40, y: 0, z: 0 };
+    p.orientation = math.identityQuat();
+    for (let i = 0; i < 120; i++) step(s);
+    expect(p.velocity.x).toBeGreaterThan(0); // pushed back out
   });
 });
 
