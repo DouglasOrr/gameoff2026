@@ -82,6 +82,7 @@ export const S = {
   },
   ramp: {
     color: 0x9c6f43,
+    ghostOpacity: 0.25, // when a ramp blocks the chase camera, like the trees
   },
 };
 
@@ -643,12 +644,7 @@ class TreeField {
     this.geometry.translate(0, 0.5, 0);
     const base = { color: S.tree.color, roughness: 0.9, flatShading: true };
     this.opaqueMat = new THREE.MeshStandardMaterial(base);
-    this.ghostMat = new THREE.MeshStandardMaterial({
-      ...base,
-      transparent: true,
-      opacity: S.tree.ghostOpacity,
-      depthWrite: false,
-    });
+    this.ghostMat = ghosted(base, S.tree.ghostOpacity);
   }
 
   sync(scene: THREE.Scene, trees: readonly physics.Tree[]): void {
@@ -681,19 +677,21 @@ class TreeField {
   }
 
   // Splits the trees into opaque and translucent by whether each one blocks the
-  // camera -> rider sightline.
-  update(
-    camera: { x: number; z: number },
-    focus: { x: number; z: number },
-  ): void {
+  // camera -> pogo (foot) sightline.
+  update(camera: Point2, target: Point2): void {
     const trees = this.trees;
     if (!this.opaque || !this.ghost || !trees) return;
     let opaque = 0;
     let ghost = 0;
     for (let i = 0; i < trees.length; i++) {
       const matrix = this.matrices[i];
-      if (occludes(trees[i], camera, focus))
-        this.ghost.setMatrixAt(ghost++, matrix);
+      const tree = trees[i];
+      const disc: Footprint = {
+        kind: "disc",
+        centre: tree.position,
+        radius: tree.radius,
+      };
+      if (occludes(disc, camera, target)) this.ghost.setMatrixAt(ghost++, matrix);
       else this.opaque.setMatrixAt(opaque++, matrix);
     }
     this.opaque.count = opaque;
@@ -703,29 +701,122 @@ class TreeField {
   }
 }
 
-// Whether an infinite cylinder of the tree's radius blocks the camera -> rider
-// sightline: nearest approach of the segment (in XZ) to the tree axis.
+// A prop's ground footprint, which the camera -> rider sightline is tested
+// against: a disc for a tree's round base, or an oriented rectangle for a ramp.
+type Footprint =
+  | { kind: "disc"; centre: Point2; radius: number }
+  | {
+      kind: "rect";
+      centre: Point2;
+      orientation: math.Quat;
+      halfWidth: number;
+      halfRun: number;
+    };
+
+// A world XZ point in a yaw-only frame centred at `centre`: rotated into the
+// frame's axes and offset from its origin.
+function toLocalXZ(
+  centre: Point2,
+  orientation: math.Quat,
+  x: number,
+  z: number,
+): Point2 {
+  const d = math.rotate(math.conjugateQuat(orientation), {
+    x: x - centre.x,
+    y: 0,
+    z: z - centre.z,
+  });
+  return { x: d.x, z: d.z };
+}
+
+// Whether a point lies within a footprint: inside the disc, or within the
+// oriented rectangle (tested in the rectangle's own frame).
+function insideFootprint(footprint: Footprint, p: Point2): boolean {
+  if (footprint.kind === "disc")
+    return (
+      Math.hypot(p.x - footprint.centre.x, p.z - footprint.centre.z) <=
+      footprint.radius
+    );
+  const l = toLocalXZ(footprint.centre, footprint.orientation, p.x, p.z);
+  return (
+    Math.abs(l.x) <= footprint.halfWidth && Math.abs(l.z) <= footprint.halfRun
+  );
+}
+
+// Whether the camera -> target sightline (a segment in XZ) crosses a footprint.
+// Trees use their exact round base; ramps their true rectangle, tested in the
+// ramp's own frame, so a long ramp no longer fades while merely nearby.
 function occludes(
-  tree: physics.Tree,
-  camera: { x: number; z: number },
-  focus: { x: number; z: number },
+  footprint: Footprint,
+  camera: Point2,
+  target: Point2,
 ): boolean {
-  const dx = focus.x - camera.x;
-  const dz = focus.z - camera.z;
-  const len2 = dx * dx + dz * dz;
-  const t =
-    len2 > 1e-9
-      ? THREE.MathUtils.clamp(
-          ((tree.position.x - camera.x) * dx +
-            (tree.position.z - camera.z) * dz) /
-            len2,
-          0,
-          1,
-        )
-      : 0;
-  const cx = camera.x + dx * t;
-  const cz = camera.z + dz * t;
-  return Math.hypot(tree.position.x - cx, tree.position.z - cz) <= tree.radius;
+  // A footprint the target is standing on or over is not in the way: a ramp
+  // you're riding shouldn't fade, and the same holds for a tree you're at.
+  if (insideFootprint(footprint, target)) return false;
+
+  if (footprint.kind === "disc") {
+    const { centre, radius } = footprint;
+    const dx = target.x - camera.x;
+    const dz = target.z - camera.z;
+    const len2 = dx * dx + dz * dz;
+    const t =
+      len2 > 1e-9
+        ? THREE.MathUtils.clamp(
+            ((centre.x - camera.x) * dx + (centre.z - camera.z) * dz) / len2,
+            0,
+            1,
+          )
+        : 0;
+    const cx = camera.x + dx * t;
+    const cz = camera.z + dz * t;
+    return Math.hypot(centre.x - cx, centre.z - cz) <= radius;
+  }
+
+  // The ramp footprint is axis-aligned in the ramp's frame, so rotate the
+  // sightline into it and reuse the segment-vs-box test. The Y slab is wide
+  // open, since only the horizontal footprint matters here.
+  const a = toLocalXZ(
+    footprint.centre,
+    footprint.orientation,
+    camera.x,
+    camera.z,
+  );
+  const b = toLocalXZ(
+    footprint.centre,
+    footprint.orientation,
+    target.x,
+    target.z,
+  );
+  return math.intersectSegmentBox(
+    { x: a.x, y: 0, z: a.z },
+    { x: b.x, y: 0, z: b.z },
+    { x: footprint.halfWidth, y: 1, z: footprint.halfRun },
+  );
+}
+
+// XZ of the pogo's foot - the end of the stick, which is what rests on a ramp.
+function footXZ(pogo: physics.Pogo): { x: number; z: number } {
+  const down = math.rotate(pogo.orientation, {
+    x: 0,
+    y: -(physics.S.stickLength - pogo.strain),
+    z: 0,
+  });
+  return { x: pogo.position.x + down.x, z: pogo.position.z + down.z };
+}
+
+// The ghosted twin of a prop material: translucent and depth-write-free, so it
+// never hides the rider behind it.
+function ghosted(
+  base: THREE.MeshStandardMaterialParameters,
+  opacity: number,
+): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    ...base,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+  });
 }
 
 // A ramp's solid: a trapezoid cross-section (the rise, the optional flat top,
@@ -749,25 +840,32 @@ function rampGeometry(ramp: physics.Ramp): THREE.BufferGeometry {
   return geo;
 }
 
-// Static ramps. They share one material, so only the geometry varies.
+// Static ramps. They share two materials (solid and ghosted) so only the
+// geometry varies; a ramp that blocks the camera -> rider sightline fades out,
+// just like the trees.
 class RampField {
   private readonly material: THREE.MeshStandardMaterial;
+  private readonly ghostMat: THREE.MeshStandardMaterial;
   private readonly group = new THREE.Group();
   private readonly geoms: THREE.BufferGeometry[] = [];
+  private readonly meshes: THREE.Mesh[] = [];
   private ramps: readonly physics.Ramp[] | null = null;
 
   constructor() {
-    this.material = new THREE.MeshStandardMaterial({
+    const base = {
       color: S.ramp.color,
       roughness: 0.9,
       flatShading: true,
-    });
+    };
+    this.material = new THREE.MeshStandardMaterial(base);
+    this.ghostMat = ghosted(base, S.ramp.ghostOpacity);
   }
 
   sync(scene: THREE.Scene, ramps: readonly physics.Ramp[]): void {
     if (this.ramps === ramps) return;
     for (const geo of this.geoms) geo.dispose();
     this.geoms.length = 0;
+    this.meshes.length = 0;
     this.group.clear();
 
     for (const ramp of ramps) {
@@ -781,11 +879,32 @@ class RampField {
         ramp.orientation.w,
       );
       this.geoms.push(geo);
+      this.meshes.push(mesh);
       this.group.add(mesh);
     }
 
     this.ramps = ramps;
     if (!this.group.parent) scene.add(this.group);
+  }
+
+  // `target` is the pogo's foot. `occludes` already treats a ramp the foot is
+  // standing on as not in the way, so no exemption is needed here.
+  update(camera: Point2, target: Point2): void {
+    const ramps = this.ramps;
+    if (!ramps) return;
+    for (let i = 0; i < this.meshes.length; i++) {
+      const ramp = ramps[i];
+      const rect: Footprint = {
+        kind: "rect",
+        centre: ramp.position,
+        orientation: ramp.orientation,
+        halfWidth: ramp.width / 2,
+        halfRun: (ramp.length + ramp.flat) / 2,
+      };
+      this.meshes[i].material = occludes(rect, camera, target)
+        ? this.ghostMat
+        : this.material;
+    }
   }
 }
 
@@ -1043,14 +1162,18 @@ export class Renderer {
       this.views[i].update(pogos[i], state.level);
 
     if (this.mode === "top") {
-      // Frame the whole track from above; passing the camera as its own focus
-      // keeps every tree opaque, since no sightline can be blocked from there.
+      // Frame the whole track from above; passing the camera as its own target
+      // keeps every prop opaque, since no sightline can be blocked from there.
       this.top.frame(state.level.gates);
-      this.trees.update(this.camera.position, this.camera.position);
+      const at = this.camera.position;
+      this.trees.update(at, at);
+      this.ramps.update(at, at);
     } else if (pogos.length > 0) {
       const focus = pogos[0]; // pogos[0] is "us"
       this.chase.follow(focus, state.level.terrain, dt, cameraPitch);
-      this.trees.update(this.camera.position, focus.position);
+      const foot = footXZ(focus);
+      this.trees.update(this.camera.position, foot);
+      this.ramps.update(this.camera.position, foot);
     }
     if (pogos.length > 0)
       this.gates.update(pogos[0].nextGate, pogos[0].lap, state.level.laps);
