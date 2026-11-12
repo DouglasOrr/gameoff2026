@@ -67,7 +67,6 @@ function gateRing(t: terrain.Terrain): physics.Gate[] {
   const radius = 600; // gates sit on a circle of this radius
   const width = 120; // span across the gate
   const height = 160; // span vertically
-  const depth = 20; // span along the gate
 
   const gates: physics.Gate[] = [];
   for (let i = 0; i < count; i++) {
@@ -79,7 +78,6 @@ function gateRing(t: terrain.Terrain): physics.Gate[] {
       orientation: math.rotationAboutY(theta + Math.PI / 2), // tangent to the loop
       width,
       height,
-      depth,
     });
   }
   return gates;

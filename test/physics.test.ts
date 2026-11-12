@@ -453,9 +453,9 @@ describe("gates", () => {
     g.orientation = math.rotationAboutY(0.7);
     const through = math.rotate(g.orientation, { x: 0, y: 0, z: 1 });
     p.position = {
-      x: g.position.x + through.x * g.depth * 0.4,
+      x: g.position.x + through.x * physics.S.gateDepth * 0.4,
       y: g.position.y,
-      z: g.position.z + through.z * g.depth * 0.4,
+      z: g.position.z + through.z * physics.S.gateDepth * 0.4,
     };
     step(s);
     expect(p.nextGate).toBe(1);

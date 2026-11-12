@@ -73,7 +73,7 @@ export const S = {
       other: 0x333a42, // dark enough to read against the ground
     },
     opacity: 0.4, // translucent
-    border: 0.15, // frame thickness, as a fraction of the smaller half-size
+    border: 0.08, // frame thickness, as a fraction of the smaller half-size
   },
   tree: {
     color: 0x2f7d4e,
@@ -301,7 +301,7 @@ function gateBounds(gates: readonly physics.Gate[]): Bounds2 | null {
     const across = math.rotate(gate.orientation, { x: 1, y: 0, z: 0 });
     const along = math.rotate(gate.orientation, { x: 0, y: 0, z: 1 });
     const w = gate.width / 2;
-    const d = gate.depth / 2;
+    const d = physics.S.gateDepth / 2;
     for (const sx of [-1, 1])
       for (const sz of [-1, 1]) {
         const x = gate.position.x + sx * w * across.x + sz * d * along.x;
@@ -691,7 +691,8 @@ class TreeField {
         centre: tree.position,
         radius: tree.radius,
       };
-      if (occludes(disc, camera, target)) this.ghost.setMatrixAt(ghost++, matrix);
+      if (occludes(disc, camera, target))
+        this.ghost.setMatrixAt(ghost++, matrix);
       else this.opaque.setMatrixAt(opaque++, matrix);
     }
     this.opaque.count = opaque;
@@ -969,10 +970,10 @@ function frameGeometry(gate: physics.Gate): THREE.ExtrudeGeometry {
   shape.holes.push(hole);
 
   const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: gate.depth,
+    depth: physics.S.gateDepth,
     bevelEnabled: false,
   });
-  geo.translate(0, 0, -gate.depth / 2); // extrudes forward; centre it
+  geo.translate(0, 0, -physics.S.gateDepth / 2); // extrudes forward; centre it
   return geo;
 }
 

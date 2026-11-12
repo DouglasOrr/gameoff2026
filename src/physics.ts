@@ -19,6 +19,7 @@ export const S = {
   riderRadius: 2.5, // pogo collision radius at the rider
   footRadius: 1, // pogo collision radius at the stick's foot
   toppleAxisY: -0.5, // stick Y (rider -> foot) above which the pogo counts as fallen
+  gateDepth: 8, // gate thickness along its axis, the same for every gate
 };
 
 export type Inputs = {
@@ -63,7 +64,6 @@ export type Gate = {
   orientation: math.Quat; // identity faces +z
   width: number;
   height: number;
-  depth: number;
 };
 
 export type Level = {
@@ -402,7 +402,7 @@ function hitsGate(prev: math.Vec3, p: math.Vec3, gate: Gate): boolean {
   return math.intersectSegmentBox(a, b, {
     x: gate.width / 2,
     y: gate.height / 2,
-    z: gate.depth / 2,
+    z: S.gateDepth / 2,
   });
 }
 
